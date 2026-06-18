@@ -1,0 +1,362 @@
+---
+title: "LoiTeS Development"
+author: "Connor Kirts"
+format: html
+---
+
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| id: workshop
+
+# packages
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(knitr)
+library(kableExtra)
+library(psych)
+library(ggplot2)
+library(ggpattern)
+library(GPArotation)
+
+# custom functions
+source('scr/read_data.R')
+source('scr/rename_values.R')
+source('scr/demographicV.R')
+source('scr/make_it_long.R')
+source('scr/prepare_EFA.R')
+
+```
+
+# Obtaining and Formatting the Data
+
+Here, we bring in the data from a csv copy of the raw xlsx file. This was done for anonymity to responses as IPAddress was originally captured. The data is formatted from wide to long for the purpose of factor analysis and correlation.
+
+```{r}
+#| echo: true
+#| id: datain
+
+# raw xlsx had StartDate; EndDate; Status; IPAddress; Progress; Duration..in.seconds.; Finished; RecordedDate; ResponseId; RecipientLastName; RecipientFirstName; RecipientEmail; ExternalReference; LocationLatitude; LocationLongitude; DistributionChannel;  UserLanguage; Q29 asks for prolific ID; Q30 is attention check; Q2 is Age; Q3 is Gender; Q4 is Country of Employment
+
+fn <- ('data/Loneliness Raw Data_May 20, 2026_12.39.csv')
+
+d1 <- read_data(filename = fn, controlQ = 'Q30')
+
+instruments <- list(
+  WHO_5     = c('Q28_1', 'Q28_2', 'Q28_3', 'Q28_4', 'Q28_5'),
+  Michele   = c('Q20_1', 'Q20_2', 'Q20_3', 'Q20_4', 'Q20_5',
+                'Q20_6', 'Q20_7', 'Q20_8', 'Q20_9', 'Q20_10',
+                'Q20_11', 'Q20_12'),
+  Hughes    = c('Q22_1', 'Q22_2', 'Q22_3', 'Q22_4', 'Q22_5',
+                'Q22_6', 'Q22_7', 'Q22_8', 'Q22_9', 'Q22_10',
+                'Q22_11', 'Q22_12', 'Q22_13', 'Q22_14', 'Q22_15',
+                'Q22_16', 'Q22_17', 'Q22_18', 'Q22_19', 'Q22_20'),
+  Tschannen = c('Q24_1', 'Q24_2', 'Q24_3', 'Q24_4', 'Q24_5',
+                'Q24_6', 'Q24_7', 'Q24_8', 'Q24_9', 'Q24_10',
+                'Q24_11', 'Q24_12'),
+  Zimet     = c('Q26_1', 'Q26_2', 'Q26_3', 'Q26_4', 'Q26_5',
+                'Q26_6', 'Q26_7', 'Q26_8', 'Q26_9', 'Q26_10',
+                'Q26_11', 'Q26_12')
+)
+
+d1_long <- make_it_long(d1, instruments = instruments)
+
+```
+# Demographic Summary
+
+There are some open questions regarding how to refer to the responses to the variables. Gender for example seems to be a binary choice (1,2) but it is unknown whether 1 = male or female. Similar issues are found for all of the responses to 'EmpCount', 'Role', 'Subject', 'LvlTaught', 'YearTaught', 'EmpStatus', 'TeachAct', 'OftenTeach', 'Qualified', 'AcadBack', 'Formal'. Once the response format is known the demographicV function can be written to handle all of these for the reporting.
+
+```{r}
+#| echo: false
+#| id: demographics
+
+# Return to demographics after figuring out what the different bits mean...
+
+# demo <- demographicV(d1, 'Demographics')
+
+# emp_counts <- dplyr::count(d1, EmpCount, sort = TRUE)
+# print(emp_counts)
+
+```
+
+
+# Exploratory Factor Analysis 
+
+In this section, we explore the dimensionality of the Michele instrument. First, the data is cleaned to only contain the Michele instrument responses. Then KMO and Bartlett's tests are used to understand if the data is suitable for factor analysis. Second, the EFA is run for the cleaned data. Parallel analysis is used to understand how many factors are estimated to be in the data by simulating factor analyses. The number of factors for the actual EFA analysis is determined by this parallel simulation. 
+
+## Prepping the data for EFA
+
+Here, data is cleaned from the long format and to remove other varibles than those in the Michele instrument. The KMO is good overall (.85) and for the individual items (range = .78-.92). The Bartlett's test (χ2(66) = 1447.01, p < .001) indicated items had sufficient correlations for factor analysis processes.
+
+```{r}
+#| echo: true
+#| id: prep_EFA
+
+# We need temporarily remove the other instruments from the data frame because we only care about Michele's instrument for the EFA.
+
+d1_long_clean <- prepare_EFA(d1_long, instrument_name = "Michele")
+
+cm <- cor(d1_long_clean, use = "pairwise.complete.obs", method = "pearson")
+KMO(cm)
+cortest.bartlett(cm, n = nrow(d1_long_clean))
+
+```
+
+## Running an EFA
+
+Before performing an EFA, parallel analysis was used to determine the number of factors to retain. This determined that a three factor solution best fit the data, following the simulations (shown on Scree Plots). 
+
+Factor analysis was then conducted on the 12 item Michele instrument using a Maximum Likelihood method (ML) with an oblimin rotation. Considering the sample size (> 200) ML was used to further investigate the statistical significance of the obtained factor loadings (Hair et al., 2019). An oblique rotation method was employed because it is assumed that factors will be correlated (Tabachnick & Fidell, 2019). 
+
+Together, the three factors explain 64% of the variance. Factor 1 explains 23% of the variance (4 items), as does Factor 2 (4 items). Factor 3 explains 18% of the total variance (4 items). The communalities of the items, however, ranged from .389 (Q20_5) to .844 (Q20_10) (M = .64). Considering an item fell below the recommended threshold of .40 (Costello & Osborne, 2005), the item was removed before another factor analysis was performed. Additionally, another item (Q20_6) 
+
+
+
+```{r}
+#| echo: true
+#| id: michele_EFA
+set.seed(3108)
+
+# obtaining communality descriptions
+comm_table <- function(x) list(
+  Mean = mean(x$communality),
+  Median = median(x$communality),
+  Range = range(x$communality))
+
+# EFA simulation
+output <- fa.parallel(d1_long_clean, fm = "ml",sim = FALSE)
+
+# running EFA with the retained simulated factor structure (3 factors) 
+fa_sol_d1_long_clean <- fa(d1_long_clean, nfactors = output$nfact, n.iter = 0, 
+                  rotate = "oblimin", missing = TRUE, warnings = TRUE, 
+                  fm = "ml")
+
+print(fa_sol_d1_long_clean)
+print(fa_sol_d1_long_clean$loadings, cutoff = 0.2)
+
+print(fa_sol_d1_long_clean$communality)
+comm_table(fa_sol_d1_long_clean)
+
+
+# Q20_5 has poor communality which hinders the factor loading. Q20_6 had a cross-loading with the first factor so should also be removed. The rest of the items are quite good (> .40)
+
+d1_long_clean2 <- dplyr::select(d1_long_clean, -Q20_6)
+
+output <- fa.parallel(d1_long_clean2, fm = "ml",sim = FALSE)
+
+fa_sol_d1_long_clean2 <- fa(d1_long_clean2, nfactors = output$nfact, n.iter = 0, 
+                  rotate = "oblimin", missing = TRUE, warnings = TRUE, 
+                  fm = "ml")
+
+print(fa_sol_d1_long_clean2)
+print(fa_sol_d1_long_clean2$loadings, cutoff = 0.2)
+
+print(fa_sol_d1_long_clean2$communality)
+comm_table(fa_sol_d1_long_clean2)
+
+
+psych::alpha(d1_long_clean2)
+# There are three factors with strong items in each factor. While removing the two low communiality items improves the factors, future issues for confirmatory analyses will be impacted by only having 2 indicators for the second factor. 
+
+```
+
+# Correlations between instruments
+
+## Requires: d1 (wide format, as returned by read_data())
+
+```{r}
+#| echo: true
+#| id: correlations
+
+# make sure everything is numeric!
+d1 <- d1 %>% mutate(across(matches("^Q(20|22|24|26|28)_"), as.numeric))
+
+# Need to calculate the scores for the instruments prior to correlation
+
+# Dealing with reverse-scoring items
+
+# Hughes (R-UCLA): items 1,4,5,6,9,10,15,16,19,20 are reverse-scored.
+hughes_rev <- c('Q22_1',  'Q22_4',  'Q22_5',  'Q22_6',
+                'Q22_9',  'Q22_10', 'Q22_15', 'Q22_16',
+                'Q22_19', 'Q22_20')
+
+d1 <- d1 %>%
+  mutate(across(all_of(hughes_rev), ~ 5 - as.numeric(.)))
+
+
+# Compute scale / sub-scale scores 
+# (row means → comparable across instruments of different lengths)
+
+score_df <- d1 %>%
+  mutate(
+
+    # WHO-5 (total score: raw 0–25, × 4 = 0–100)
+    WHO5_total = rowSums(
+      across(c('Q28_1','Q28_2','Q28_3','Q28_4','Q28_5')),
+      na.rm = TRUE) * 4,
+
+    # Michele (full scale + EFA-derived sub-scales)
+    Michele_full  = rowMeans(
+      across(c('Q20_1','Q20_2','Q20_3','Q20_4',
+               'Q20_5','Q20_6','Q20_7','Q20_8',
+               'Q20_9','Q20_10','Q20_11','Q20_12')),
+      na.rm = TRUE),
+
+         # EFA Factor 1
+         Michele_F1    = rowMeans(
+           across(c('Q20_1','Q20_2','Q20_3','Q20_4')),
+           na.rm = TRUE),
+
+         # EFA Factor 2
+         Michele_F2    = rowMeans(
+           across(c('Q20_9','Q20_10','Q20_11','Q20_12')),
+           na.rm = TRUE),
+
+         # EFA Factor 3
+         Michele_F3    = rowMeans(
+           across(c('Q20_5', 'Q20_7','Q20_8')),
+           na.rm = TRUE),
+
+    # Hughes / R-UCLA (sum score after reverse-scoring)
+    Hughes_total  = rowSums(
+      across(c('Q22_1','Q22_2','Q22_3','Q22_4','Q22_5',
+               'Q22_6','Q22_7','Q22_8','Q22_9','Q22_10',
+               'Q22_11','Q22_12','Q22_13','Q22_14','Q22_15',
+               'Q22_16','Q22_17','Q22_18','Q22_19','Q22_20')),
+      na.rm = TRUE),
+
+    # Tschannen-Moran (3 sub-scales, mean score each)
+    Tschannen_total          = rowMeans(
+      across(c('Q24_1','Q24_2','Q24_3','Q24_4','Q24_5',
+               'Q24_6','Q24_7','Q24_8','Q24_9','Q24_10',
+               'Q24_11','Q24_12')),
+      na.rm = TRUE),
+    
+        # Sub-scale 1
+         Tschannen_instruction    = rowMeans(
+          across(c('Q24_5','Q24_9','Q24_10','Q24_12')),
+          na.rm = TRUE),
+        
+        # Sub-scale 2
+         Tschannen_class_manager  = rowMeans(
+          across(c('Q24_1','Q24_3','Q24_6','Q24_8')),
+          na.rm = TRUE),
+    
+        # Sub-scale 3
+         Tschannen_engagement     = rowMeans(
+          across(c('Q24_2','Q24_4','Q24_7','Q24_11')),
+          na.rm = TRUE),
+
+    # Zimet MSPSS (3 sub-scales, mean score / 4)
+    Zimet_total     = rowMeans(
+      across(c('Q26_1','Q26_2','Q26_3','Q26_4','Q26_5',
+               'Q26_6','Q26_7','Q26_8','Q26_9','Q26_10',
+               'Q26_11','Q26_12')),
+      na.rm = TRUE),
+    
+        # Sub-scale 1
+         Zimet_sig_other = rowMeans(
+          across(c('Q26_1','Q26_2','Q26_5','Q26_10')),
+          na.rm = TRUE),
+    
+        # Sub-scale 2
+        Zimet_family    = rowMeans(
+          across(c('Q26_3','Q26_4','Q26_8','Q26_11')),
+          na.rm = TRUE),
+    
+        # Sub-scale 3
+        Zimet_friends   = rowMeans(
+          across(c('Q26_6','Q26_7','Q26_9','Q26_12')),
+          na.rm = TRUE)
+  )
+
+# Pull score columns into a correlation matrix
+
+score_vars <- c(
+  "WHO5_total",
+  "Michele_full",   "Michele_F1",   "Michele_F2",   "Michele_F3",
+  "Hughes_total",
+  "Tschannen_total","Tschannen_instruction","Tschannen_class_manager","Tschannen_engagement",
+  "Zimet_total",    "Zimet_sig_other","Zimet_family","Zimet_friends"
+)
+
+cor_data <- score_df %>%
+  dplyr::select(all_of(score_vars))
+
+# Pearson correlation matrix with pairwise complete observations
+cor_matrix <- cor(cor_data, use = "pairwise.complete.obs", method = "pearson")
+
+# p-values via psych::corr.test (also gives CIs)
+cor_test <- psych::corr.test(cor_data, use = "pairwise", method = "pearson",
+                             adjust = "holm")   # Holm correction for multiple comparisons
+
+
+# Display: correlation table with significance stars
+
+# attach stars to a correlation matrix
+add_stars <- function(r_mat, p_mat) {
+  stars <- ifelse(p_mat < .001, "***",
+           ifelse(p_mat < .010, "**",
+           ifelse(p_mat < .050, "*", "")))
+  matrix(
+    paste0(sprintf("%.2f", r_mat), stars),
+    nrow  = nrow(r_mat),
+    dimnames = dimnames(r_mat)
+  )
+}
+
+cor_starred <- add_stars(cor_matrix, cor_test$p)
+cor_starred[upper.tri(cor_starred, diag = TRUE)] <- ""
+
+# Short display labels (edit to match your preferred names)
+rownames(cor_starred) <- colnames(cor_starred) <- c(
+  "WHO-5",
+  "LoiTeS",   "LoiTeS F1", "LoiTeS F2", "LoiTeS F3",
+  "Hughes",
+  "Tschannen", "Instruction", "Cl. Mgmt", "Engagement",
+  "Zimet",    "Sig. Other", "Family", "Friends"
+)
+
+kableExtra::kbl(
+  cor_starred,
+  caption  = "Pearson correlations between scale and sub-scale scores",
+  booktabs = TRUE,
+  align    = "r"
+) %>%
+  kableExtra::kable_styling(
+    latex_options = c("scale_down", "hold_position"),
+    font_size     = 9
+  ) %>%
+  kableExtra::footnote(
+    general = "* p < .05  ** p < .01  *** p < .001 (Holm-corrected). Diagonals omitted.",
+    general_title = "Note.",
+    footnote_as_chunk = TRUE
+  )
+
+# Descriptive statistics for each score
+
+desc_stats <- cor_data %>%
+  tidyr::pivot_longer(everything(), names_to = "Scale", values_to = "score") %>%
+  dplyr::group_by(Scale) %>%
+  dplyr::summarise(
+    N    = sum(!is.na(score)),
+    Mean = round(mean(score, na.rm = TRUE), 2),
+    SD   = round(sd(score,   na.rm = TRUE), 2),
+    Min  = round(min(score,  na.rm = TRUE), 2),
+    Max  = round(max(score,  na.rm = TRUE), 2),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(match(Scale, score_vars))   # keep original order
+
+kableExtra::kbl(
+  desc_stats,
+  caption  = "Descriptive statistics for scale and sub-scale scores",
+  booktabs = TRUE,
+  digits   = 2
+) %>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+```
