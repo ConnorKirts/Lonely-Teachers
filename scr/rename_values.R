@@ -94,7 +94,6 @@ rename_values <- function(data) {
     "35"            = ">= 30 years",
     "40"            = ">= 30 years"
   )
-  YearTaught <- data$YearTaught
   data$YearTaught <- dplyr::recode(trimws(data$YearTaught), !!!year_lookup)
   
   

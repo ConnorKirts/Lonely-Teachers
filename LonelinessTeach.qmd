@@ -76,7 +76,7 @@ There are some open questions regarding how to refer to the responses to the var
 #| echo: false
 #| id: demographics
 
-d1_rename <- rename_values(d1)
+d1 <- rename_values(d1)
 
 freq_table <- function(x, var_label) {
   tbl <- sort(table(x, useNA = "ifany"), decreasing = TRUE)
@@ -91,10 +91,8 @@ freq_table <- function(x, var_label) {
 
 freq_table_multi <- function(x, var_label) {
   n_participants <- sum(!is.na(x))
-
   all_labels <- unlist(strsplit(na.omit(as.character(x)), " / "))
   tbl        <- sort(table(all_labels), decreasing = TRUE)
-
   data.frame(
     Variable = c(var_label, rep("", length(tbl) - 1)),
     Level    = names(tbl),
@@ -104,9 +102,7 @@ freq_table_multi <- function(x, var_label) {
   )
 }
 
-# Age summary
-
-age_clean <- as.numeric(d1_rename$Age[!is.na(d1_rename$Age)])
+age_clean <- as.numeric(d1$Age[!is.na(d1$Age)])
 
 age_row <- data.frame(
   Variable = "Age",
@@ -114,35 +110,31 @@ age_row <- data.frame(
     "M = ",    round(mean(age_clean),    1),
     ", SD = ",  round(sd(age_clean),     2),
     ", Mdn = ", round(median(age_clean), 1),
-    " [", min(age_clean), "\u2013", max(age_clean), "]"
+    " [", min(age_clean), "-", max(age_clean), "]"
   ),
   N   = length(age_clean),
   `%` = "",
   check.names = FALSE
 )
 
-
-# Build the table
-# Multi-select variables use freq_table_multi
 demo_table <- bind_rows(
   age_row,
-  freq_table(      d1_rename$Gender,     "Gender"),
-  freq_table(      d1_rename$EmpCount,   "Country"),
-  freq_table(      d1_rename$YearTaught, "Years Taught"),
-  freq_table_multi(d1_rename$Role,       "Role"),              
-  freq_table_multi(d1_rename$LvlTaught,  "Level Taught"),      
-  freq_table(      d1_rename$EmpStatus,  "Employment Status"),
-  freq_table_multi(d1_rename$TeachAct,   "Teaching Activity"), 
-  freq_table(      d1_rename$OftenTeach, "Teaching Frequency"),
-  freq_table(      d1_rename$Qualified,  "Highest Qualification"),
-  freq_table(      d1_rename$Formal,     "Formal Training")
+  freq_table(      d1$Gender,     "Gender"),
+  freq_table(      d1$EmpCount,   "Country"),
+  freq_table(      d1$YearTaught, "Years Taught"),
+  freq_table_multi(d1$Role,       "Role"),
+  freq_table_multi(d1$LvlTaught,  "Level Taught"),
+  freq_table(      d1$EmpStatus,  "Employment Status"),
+  freq_table_multi(d1$TeachAct,   "Teaching Activity"),
+  freq_table(      d1$OftenTeach, "Teaching Frequency"),
+  freq_table(      d1$Qualified,  "Highest Qualification"),
+  freq_table(      d1$Formal,     "Formal Training")
 )
-
 
 kableExtra::kbl(
   demo_table,
   caption  = paste0("Participant demographics (N = ",
-                    length(unique(d1_rename$PROLIFIC_PID)), ")"),
+                    length(unique(d1$PROLIFIC_PID)), ")"),
   booktabs = FALSE,
   align    = c("l", "l", "r", "r")
 ) |>
@@ -253,7 +245,7 @@ psych::alpha(d1_long_clean2)
 #| id: correlations
 
 # make sure everything is numeric!
-d1_cor <- d1_rename %>% mutate(across(matches("^Q(20|22|24|26|28)_"), as.numeric))
+d1_cor <- d1 %>% mutate(across(matches("^Q(20|22|24|26|28)_"), as.numeric))
 
 # Need to calculate the scores for the instruments prior to correlation
 
@@ -446,10 +438,28 @@ kableExtra::kbl(
 
 Want to compare how the variables for the teacher demographics relate to the responses to the WHO-5, LoiTeS, Hughes, Tschannen, and Zimet instruments. 
 
+This section is not correct. Need to get the renamed variable groups as the comparisons rather than the raw. The issue is there are multi-select responses which make no sense to have individual...
+
 ```{r}
 #| echo: true
 #| warnings: false
 #| id: mixed_Models
+
+extract_fixed <- function(model, outcome_name) {
+  coef_table <- coef(summary(model))
+  ci         <- confint(model, parm = "beta_", method = "Wald")
+  data.frame(
+    outcome   = outcome_name,
+    term      = rownames(coef_table),
+    estimate  = coef_table[, "Estimate"],
+    std.error = coef_table[, "Std. Error"],
+    statistic = coef_table[, "t value"],
+    p.value   = coef_table[, "Pr(>|t|)"],
+    conf.low  = ci[rownames(coef_table), 1],
+    conf.high = ci[rownames(coef_table), 2],
+    row.names = NULL
+  )
+}
 
 outcomes <- c(
   "WHO5_total",
@@ -460,27 +470,26 @@ outcomes <- c(
   "Zimet_total", "Zimet_sig_other", "Zimet_family", "Zimet_friends"
 )
 
-# Continuous and factor demographics kept separate for readability
 demo_vars <- c("Age", "Gender", "Role", "LvlTaught", "YearTaught",
                "EmpStatus", "TeachAct", "OftenTeach",
-               "Qualified", "AcadBack", "Formal")
+               "Qualified", "Formal")
 
-# -- 1a. Fit one model per outcome with all demographics ----------------------
+# Fit one model per outcome --------------------------------------------
 broad_models <- lapply(setNames(outcomes, outcomes), function(outcome) {
   fml <- as.formula(
     paste(outcome, "~", paste(demo_vars, collapse = " + "),
-          "+ (1 | EmpCount)")   # random intercept by country
+          "+ (1 | EmpCount)")
   )
   lmer(fml, data = score_df, REML = FALSE,
        control = lmerControl(optimizer = "bobyqa"))
 })
 
-# -- 1b. Quick summary table: fixed-effect coefficients ----------------------
+# Extract fixed effects (no broom.mixed) --------------------------------
 broad_tidy <- bind_rows(
-  lapply(names(broad_models), function(nm) {
-    broom.mixed::tidy(broad_models[[nm]], effects = "fixed", conf.int = TRUE) %>%
-      mutate(outcome = nm)
-  })
+  mapply(extract_fixed,
+         model        = broad_models,
+         outcome_name = names(broad_models),
+         SIMPLIFY     = FALSE)
 )
 
 # Significant predictors at p < .05 (Satterthwaite)
@@ -492,8 +501,7 @@ sig_predictors <- broad_tidy %>%
 print(sig_predictors)
 
 
-# WHO-5 -----------------------------
-
+# WHO-5 ----------------------------------------------------------------------
 m_WHO5_cross <- lmer(
   WHO5_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
     (1 | EmpCount),
@@ -503,8 +511,7 @@ m_WHO5_cross <- lmer(
 summary(m_WHO5_cross)
 
 
-# LoiTeS full + factors ----------------------------
-
+# LoiTeS full + factors -------------------------------------------------------
 m_LoiTeS_full <- lmer(
   Michele_full ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
     (1 | EmpCount),
@@ -513,7 +520,6 @@ m_LoiTeS_full <- lmer(
 )
 summary(m_LoiTeS_full)
 
-# Factor models
 m_LoiTeS_F1 <- lmer(
   Michele_F1 ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
     (1 | EmpCount),
@@ -536,7 +542,7 @@ m_LoiTeS_F3 <- lmer(
 )
 
 
-# Hughes (R-UCLA loneliness) -------------------------------------------
+# Hughes (R-UCLA) -------------------------------------------------------------
 m_Hughes <- lmer(
   Hughes_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
     (1 | EmpCount),
@@ -546,8 +552,7 @@ m_Hughes <- lmer(
 summary(m_Hughes)
 
 
-# Tschannen-Moran ------------------------------
-
+# Tschannen-Moran -------------------------------------------------------------
 m_Tschannen_total <- lmer(
   Tschannen_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
     (1 | EmpCount),
@@ -556,14 +561,12 @@ m_Tschannen_total <- lmer(
 )
 summary(m_Tschannen_total)
 
-# Sub-scale models
-m_Tschannen_instr <- update(m_Tschannen_total, Tschannen_instruction ~ .)
+m_Tschannen_instr <- update(m_Tschannen_total, Tschannen_instruction  ~ .)
 m_Tschannen_mgmt  <- update(m_Tschannen_total, Tschannen_class_manager ~ .)
-m_Tschannen_eng   <- update(m_Tschannen_total, Tschannen_engagement ~ .)
+m_Tschannen_eng   <- update(m_Tschannen_total, Tschannen_engagement    ~ .)
 
 
-# Zimet MSPSS -------------------------------
-
+# Zimet MSPSS -----------------------------------------------------------------
 m_Zimet_total <- lmer(
   Zimet_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
     (1 | EmpCount),
@@ -572,13 +575,12 @@ m_Zimet_total <- lmer(
 )
 summary(m_Zimet_total)
 
-m_Zimet_sig   <- update(m_Zimet_total, Zimet_sig_other ~ .)
-m_Zimet_fam   <- update(m_Zimet_total, Zimet_family    ~ .)
-m_Zimet_frd   <- update(m_Zimet_total, Zimet_friends   ~ .)
+m_Zimet_sig <- update(m_Zimet_total, Zimet_sig_other ~ .)
+m_Zimet_fam <- update(m_Zimet_total, Zimet_family    ~ .)
+m_Zimet_frd <- update(m_Zimet_total, Zimet_friends   ~ .)
 
 
-
-# LoiTeS predicted ----------------
+# Cross-instrument model ------------------------------------------------------
 m_LoiTeS_cross <- lmer(
   Michele_full ~ Tschannen_total + Zimet_total + WHO5_total +
     Age + Gender + YearTaught + EmpStatus +
@@ -589,13 +591,13 @@ m_LoiTeS_cross <- lmer(
 summary(m_LoiTeS_cross)
 
 
-
+# Model comparison ------------------------------------------------------------
 m_LoiTeS_noGender <- update(m_LoiTeS_full, . ~ . - Gender)
 anova(m_LoiTeS_noGender, m_LoiTeS_full)
 
-# ICC: how much variance is attributable to country?
+# ICC: variance attributable to country
 icc_vals <- sapply(broad_models, function(m) {
-  vc <- as.data.frame(VarCorr(m))
+  vc          <- as.data.frame(VarCorr(m))
   country_var <- vc$vcov[vc$grp == "EmpCount"]
   resid_var   <- vc$vcov[vc$grp == "Residual"]
   country_var / (country_var + resid_var)
@@ -603,10 +605,11 @@ icc_vals <- sapply(broad_models, function(m) {
 print(round(icc_vals, 3))
 
 
-# Visualising fixed effects (coefficient plot)
-
+# Coefficient plots (no broom.mixed — uses extract_fixed) ---------------------
+# FIX 6: plot_coefs rebuilt on extract_fixed()
 plot_coefs <- function(model, title = "") {
-  broom.mixed::tidy(model, effects = "fixed", conf.int = TRUE) %>%
+  coef_df <- extract_fixed(model, outcome_name = "")
+  coef_df %>%
     filter(term != "(Intercept)") %>%
     ggplot(aes(x = estimate, y = reorder(term, estimate))) +
     geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
@@ -617,9 +620,8 @@ plot_coefs <- function(model, title = "") {
     theme_bw(base_size = 11)
 }
 
-plot_coefs(m_LoiTeS_full,    "LoiTeS — nuanced model")
-plot_coefs(m_WHO5_cross,     "WHO-5 — cross-instrument model")
-plot_coefs(m_Tschannen_total,"Tschannen — teacher efficacy")
-
+plot_coefs(m_LoiTeS_full,     "LoiTeS — demographic model")
+plot_coefs(m_WHO5_cross,      "WHO-5 — demographic model")
+plot_coefs(m_Tschannen_total, "Tschannen — teacher efficacy")
 ```
 
