@@ -21,6 +21,9 @@ library(psych)
 library(ggplot2)
 library(ggpattern)
 library(GPArotation)
+library(lme4)
+library(lmerTest)
+library(broom.mixed)
 
 # custom functions
 source('scr/read_data.R')
@@ -73,12 +76,91 @@ There are some open questions regarding how to refer to the responses to the var
 #| echo: false
 #| id: demographics
 
-# Return to demographics after figuring out what the different bits mean...
+d1_rename <- rename_values(d1)
 
-# demo <- demographicV(d1, 'Demographics')
+freq_table <- function(x, var_label) {
+  tbl <- sort(table(x, useNA = "ifany"), decreasing = TRUE)
+  data.frame(
+    Variable = c(var_label, rep("", length(tbl) - 1)),
+    Level    = names(tbl),
+    N        = as.integer(tbl),
+    `%`      = paste0(round(100 * as.integer(tbl) / sum(tbl), 1), "%"),
+    check.names = FALSE
+  )
+}
 
-# emp_counts <- dplyr::count(d1, EmpCount, sort = TRUE)
-# print(emp_counts)
+freq_table_multi <- function(x, var_label) {
+  n_participants <- sum(!is.na(x))
+
+  all_labels <- unlist(strsplit(na.omit(as.character(x)), " / "))
+  tbl        <- sort(table(all_labels), decreasing = TRUE)
+
+  data.frame(
+    Variable = c(var_label, rep("", length(tbl) - 1)),
+    Level    = names(tbl),
+    N        = as.integer(tbl),
+    `%`      = paste0(round(100 * as.integer(tbl) / n_participants, 1), "%"),
+    check.names = FALSE
+  )
+}
+
+# Age summary
+
+age_clean <- as.numeric(d1_rename$Age[!is.na(d1_rename$Age)])
+
+age_row <- data.frame(
+  Variable = "Age",
+  Level    = paste0(
+    "M = ",    round(mean(age_clean),    1),
+    ", SD = ",  round(sd(age_clean),     2),
+    ", Mdn = ", round(median(age_clean), 1),
+    " [", min(age_clean), "\u2013", max(age_clean), "]"
+  ),
+  N   = length(age_clean),
+  `%` = "",
+  check.names = FALSE
+)
+
+
+# Build the table
+# Multi-select variables use freq_table_multi
+demo_table <- bind_rows(
+  age_row,
+  freq_table(      d1_rename$Gender,     "Gender"),
+  freq_table(      d1_rename$EmpCount,   "Country"),
+  freq_table(      d1_rename$YearTaught, "Years Taught"),
+  freq_table_multi(d1_rename$Role,       "Role"),              
+  freq_table_multi(d1_rename$LvlTaught,  "Level Taught"),      
+  freq_table(      d1_rename$EmpStatus,  "Employment Status"),
+  freq_table_multi(d1_rename$TeachAct,   "Teaching Activity"), 
+  freq_table(      d1_rename$OftenTeach, "Teaching Frequency"),
+  freq_table(      d1_rename$Qualified,  "Highest Qualification"),
+  freq_table(      d1_rename$Formal,     "Formal Training")
+)
+
+
+kableExtra::kbl(
+  demo_table,
+  caption  = paste0("Participant demographics (N = ",
+                    length(unique(d1_rename$PROLIFIC_PID)), ")"),
+  booktabs = FALSE,
+  align    = c("l", "l", "r", "r")
+) |>
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "striped"),
+    full_width    = TRUE
+  ) |>
+  kableExtra::column_spec(1, bold = TRUE) |>
+  kableExtra::footnote(
+    general = paste0(
+      "% figures are within-variable percentages. ",
+      "For multi-select items (Role, Level Taught, Teaching Activity) ",
+      "percentages reflect the proportion of participants selecting each ",
+      "option and will sum to more than 100%."
+    ),
+    general_title     = "Note.",
+    footnote_as_chunk = TRUE
+  )
 
 ```
 
@@ -112,7 +194,6 @@ Before performing an EFA, parallel analysis was used to determine the number of 
 Factor analysis was then conducted on the 12 item Michele instrument using a Maximum Likelihood method (ML) with an oblimin rotation. Considering the sample size (> 200) ML was used to further investigate the statistical significance of the obtained factor loadings (Hair et al., 2019). An oblique rotation method was employed because it is assumed that factors will be correlated (Tabachnick & Fidell, 2019). 
 
 Together, the three factors explain 64% of the variance. Factor 1 explains 23% of the variance (4 items), as does Factor 2 (4 items). Factor 3 explains 18% of the total variance (4 items). The communalities of the items, however, ranged from .389 (Q20_5) to .844 (Q20_10) (M = .64). Considering an item fell below the recommended threshold of .40 (Costello & Osborne, 2005), the item was removed before another factor analysis was performed. Additionally, another item (Q20_6) 
-
 
 
 ```{r}
@@ -172,7 +253,7 @@ psych::alpha(d1_long_clean2)
 #| id: correlations
 
 # make sure everything is numeric!
-d1 <- d1 %>% mutate(across(matches("^Q(20|22|24|26|28)_"), as.numeric))
+d1_cor <- d1_rename %>% mutate(across(matches("^Q(20|22|24|26|28)_"), as.numeric))
 
 # Need to calculate the scores for the instruments prior to correlation
 
@@ -183,14 +264,14 @@ hughes_rev <- c('Q22_1',  'Q22_4',  'Q22_5',  'Q22_6',
                 'Q22_9',  'Q22_10', 'Q22_15', 'Q22_16',
                 'Q22_19', 'Q22_20')
 
-d1 <- d1 %>%
+d1_cor <- d1_cor %>%
   mutate(across(all_of(hughes_rev), ~ 5 - as.numeric(.)))
 
 
 # Compute scale / sub-scale scores 
 # (row means → comparable across instruments of different lengths)
 
-score_df <- d1 %>%
+score_df <- d1_cor %>%
   mutate(
 
     # WHO-5 (total score: raw 0–25, × 4 = 0–100)
@@ -360,3 +441,185 @@ kableExtra::kbl(
   kableExtra::kable_styling(latex_options = "hold_position")
 
 ```
+
+# Linear Mixed Models 
+
+Want to compare how the variables for the teacher demographics relate to the responses to the WHO-5, LoiTeS, Hughes, Tschannen, and Zimet instruments. 
+
+```{r}
+#| echo: true
+#| warnings: false
+#| id: mixed_Models
+
+outcomes <- c(
+  "WHO5_total",
+  "Michele_full", "Michele_F1", "Michele_F2", "Michele_F3",
+  "Hughes_total",
+  "Tschannen_total", "Tschannen_instruction",
+    "Tschannen_class_manager", "Tschannen_engagement",
+  "Zimet_total", "Zimet_sig_other", "Zimet_family", "Zimet_friends"
+)
+
+# Continuous and factor demographics kept separate for readability
+demo_vars <- c("Age", "Gender", "Role", "LvlTaught", "YearTaught",
+               "EmpStatus", "TeachAct", "OftenTeach",
+               "Qualified", "AcadBack", "Formal")
+
+# -- 1a. Fit one model per outcome with all demographics ----------------------
+broad_models <- lapply(setNames(outcomes, outcomes), function(outcome) {
+  fml <- as.formula(
+    paste(outcome, "~", paste(demo_vars, collapse = " + "),
+          "+ (1 | EmpCount)")   # random intercept by country
+  )
+  lmer(fml, data = score_df, REML = FALSE,
+       control = lmerControl(optimizer = "bobyqa"))
+})
+
+# -- 1b. Quick summary table: fixed-effect coefficients ----------------------
+broad_tidy <- bind_rows(
+  lapply(names(broad_models), function(nm) {
+    broom.mixed::tidy(broad_models[[nm]], effects = "fixed", conf.int = TRUE) %>%
+      mutate(outcome = nm)
+  })
+)
+
+# Significant predictors at p < .05 (Satterthwaite)
+sig_predictors <- broad_tidy %>%
+  filter(p.value < .05, term != "(Intercept)") %>%
+  dplyr::select(outcome, term, estimate, std.error, statistic, p.value) %>%
+  arrange(outcome, p.value)
+
+print(sig_predictors)
+
+
+# WHO-5 -----------------------------
+
+m_WHO5_cross <- lmer(
+  WHO5_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+summary(m_WHO5_cross)
+
+
+# LoiTeS full + factors ----------------------------
+
+m_LoiTeS_full <- lmer(
+  Michele_full ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+summary(m_LoiTeS_full)
+
+# Factor models
+m_LoiTeS_F1 <- lmer(
+  Michele_F1 ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+
+m_LoiTeS_F2 <- lmer(
+  Michele_F2 ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+
+m_LoiTeS_F3 <- lmer(
+  Michele_F3 ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+
+
+# Hughes (R-UCLA loneliness) -------------------------------------------
+m_Hughes <- lmer(
+  Hughes_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+summary(m_Hughes)
+
+
+# Tschannen-Moran ------------------------------
+
+m_Tschannen_total <- lmer(
+  Tschannen_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+summary(m_Tschannen_total)
+
+# Sub-scale models
+m_Tschannen_instr <- update(m_Tschannen_total, Tschannen_instruction ~ .)
+m_Tschannen_mgmt  <- update(m_Tschannen_total, Tschannen_class_manager ~ .)
+m_Tschannen_eng   <- update(m_Tschannen_total, Tschannen_engagement ~ .)
+
+
+# Zimet MSPSS -------------------------------
+
+m_Zimet_total <- lmer(
+  Zimet_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+summary(m_Zimet_total)
+
+m_Zimet_sig   <- update(m_Zimet_total, Zimet_sig_other ~ .)
+m_Zimet_fam   <- update(m_Zimet_total, Zimet_family    ~ .)
+m_Zimet_frd   <- update(m_Zimet_total, Zimet_friends   ~ .)
+
+
+
+# LoiTeS predicted ----------------
+m_LoiTeS_cross <- lmer(
+  Michele_full ~ Tschannen_total + Zimet_total + WHO5_total +
+    Age + Gender + YearTaught + EmpStatus +
+    (1 | EmpCount),
+  data = score_df, REML = FALSE,
+  control = lmerControl(optimizer = "bobyqa")
+)
+summary(m_LoiTeS_cross)
+
+
+
+m_LoiTeS_noGender <- update(m_LoiTeS_full, . ~ . - Gender)
+anova(m_LoiTeS_noGender, m_LoiTeS_full)
+
+# ICC: how much variance is attributable to country?
+icc_vals <- sapply(broad_models, function(m) {
+  vc <- as.data.frame(VarCorr(m))
+  country_var <- vc$vcov[vc$grp == "EmpCount"]
+  resid_var   <- vc$vcov[vc$grp == "Residual"]
+  country_var / (country_var + resid_var)
+})
+print(round(icc_vals, 3))
+
+
+# Visualising fixed effects (coefficient plot)
+
+plot_coefs <- function(model, title = "") {
+  broom.mixed::tidy(model, effects = "fixed", conf.int = TRUE) %>%
+    filter(term != "(Intercept)") %>%
+    ggplot(aes(x = estimate, y = reorder(term, estimate))) +
+    geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
+    geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
+                   height = 0.2, colour = "steelblue") +
+    geom_point(size = 2.5, colour = "steelblue") +
+    labs(title = title, x = "Estimate (95% CI)", y = NULL) +
+    theme_bw(base_size = 11)
+}
+
+plot_coefs(m_LoiTeS_full,    "LoiTeS — nuanced model")
+plot_coefs(m_WHO5_cross,     "WHO-5 — cross-instrument model")
+plot_coefs(m_Tschannen_total,"Tschannen — teacher efficacy")
+
+```
+
