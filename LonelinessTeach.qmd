@@ -438,16 +438,67 @@ kableExtra::kbl(
 
 Want to compare how the variables for the teacher demographics relate to the responses to the WHO-5, LoiTeS, Hughes, Tschannen, and Zimet instruments. 
 
-This section is not correct. Need to get the renamed variable groups as the comparisons rather than the raw. The issue is there are multi-select responses which make no sense to have individual...
-
 ```{r}
 #| echo: true
 #| warnings: false
 #| id: mixed_Models
 
+# Expand multi-select columns 
+expand_multiselect <- function(df, col) {
+  all_opts <- df[[col]] |>
+    na.omit() |>
+    strsplit(" / ") |>
+    unlist() |>
+    trimws() |>
+    unique() |>
+    sort()
+
+  for (opt in all_opts) {
+    new_col <- paste0(col, "_", gsub("[^A-Za-z0-9]", "_", opt))
+    df[[new_col]] <- as.integer(
+      !is.na(df[[col]]) & grepl(opt, df[[col]], fixed = TRUE)
+    )
+  }
+  df
+}
+
+score_df <- expand_multiselect(score_df, "TeachAct")
+score_df <- expand_multiselect(score_df, "Role")
+score_df <- expand_multiselect(score_df, "LvlTaught")
+
+# Predictors
+demo_scalar    <- c("Age", "Gender", "YearTaught", "EmpStatus",
+                    "OftenTeach", "Qualified", "Formal")
+
+demo_TeachAct  <- grep("^TeachAct_",  names(score_df), value = TRUE)
+demo_Role      <- grep("^Role_",      names(score_df), value = TRUE)
+demo_LvlTaught <- grep("^LvlTaught_", names(score_df), value = TRUE)
+
+demo_vars   <- c(demo_scalar, demo_TeachAct, demo_Role, demo_LvlTaught)
+focused_rhs <- paste(c(demo_scalar, demo_TeachAct), collapse = " + ")
+
+# Analysis
+use_mixed <- FALSE   # TRUE → lmer() + (1|EmpCount);  FALSE → lm()
+
+fit_model <- function(outcome, rhs, mixed = use_mixed) {
+  fml <- as.formula(paste(outcome, "~", rhs))
+  if (mixed) {
+    fml_mixed <- as.formula(paste(outcome, "~", rhs, "+ (1 | EmpCount)"))
+    lmer(fml_mixed, data = score_df, REML = FALSE,
+         control = lmerControl(optimizer = "bobyqa"))
+  } else {
+    lm(fml, data = score_df)
+  }
+}
+
 extract_fixed <- function(model, outcome_name) {
-  coef_table <- coef(summary(model))
-  ci         <- confint(model, parm = "beta_", method = "Wald")
+  if (inherits(model, "lmerMod")) {
+    coef_table <- coef(summary(model))
+    ci         <- confint(model, parm = "beta_", method = "Wald")
+  } else {
+    coef_table <- coef(summary(model))
+    ci         <- confint(model)
+  }
   data.frame(
     outcome   = outcome_name,
     term      = rownames(coef_table),
@@ -461,30 +512,20 @@ extract_fixed <- function(model, outcome_name) {
   )
 }
 
+# Broad sweep 
 outcomes <- c(
   "WHO5_total",
   "Michele_full", "Michele_F1", "Michele_F2", "Michele_F3",
   "Hughes_total",
   "Tschannen_total", "Tschannen_instruction",
-    "Tschannen_class_manager", "Tschannen_engagement",
+  "Tschannen_class_manager", "Tschannen_engagement",
   "Zimet_total", "Zimet_sig_other", "Zimet_family", "Zimet_friends"
 )
 
-demo_vars <- c("Age", "Gender", "Role", "LvlTaught", "YearTaught",
-               "EmpStatus", "TeachAct", "OftenTeach",
-               "Qualified", "Formal")
-
-# Fit one model per outcome --------------------------------------------
 broad_models <- lapply(setNames(outcomes, outcomes), function(outcome) {
-  fml <- as.formula(
-    paste(outcome, "~", paste(demo_vars, collapse = " + "),
-          "+ (1 | EmpCount)")
-  )
-  lmer(fml, data = score_df, REML = FALSE,
-       control = lmerControl(optimizer = "bobyqa"))
+  fit_model(outcome, paste(demo_vars, collapse = " + "))
 })
 
-# Extract fixed effects (no broom.mixed) --------------------------------
 broad_tidy <- bind_rows(
   mapply(extract_fixed,
          model        = broad_models,
@@ -492,125 +533,76 @@ broad_tidy <- bind_rows(
          SIMPLIFY     = FALSE)
 )
 
-# Significant predictors at p < .05 (Satterthwaite)
-sig_predictors <- broad_tidy %>%
-  filter(p.value < .05, term != "(Intercept)") %>%
-  dplyr::select(outcome, term, estimate, std.error, statistic, p.value) %>%
+sig_predictors <- broad_tidy |>
+  filter(p.value < .05, term != "(Intercept)") |>
+  dplyr::select(outcome, term, estimate, std.error, statistic, p.value) |>
   arrange(outcome, p.value)
 
 print(sig_predictors)
 
+# ICC (mixed models only) 
+if (use_mixed) {
+  icc_vals <- sapply(broad_models, function(m) {
+    vc          <- as.data.frame(VarCorr(m))
+    country_var <- vc$vcov[vc$grp == "EmpCount"]
+    resid_var   <- vc$vcov[vc$grp == "Residual"]
+    country_var / (country_var + resid_var)
+  })
+  print(round(icc_vals, 3))
+}
 
-# WHO-5 ----------------------------------------------------------------------
-m_WHO5_cross <- lmer(
-  WHO5_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
-)
+# Focused models 
+
+# WHO-5
+m_WHO5_cross <- fit_model("WHO5_total", focused_rhs)
 summary(m_WHO5_cross)
 
-
-# LoiTeS full + factors -------------------------------------------------------
-m_LoiTeS_full <- lmer(
-  Michele_full ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
-)
+# LoiTeS full + sub-scales
+m_LoiTeS_full <- fit_model("Michele_full", focused_rhs)
+m_LoiTeS_F1   <- fit_model("Michele_F1",   focused_rhs)
+m_LoiTeS_F2   <- fit_model("Michele_F2",   focused_rhs)
+m_LoiTeS_F3   <- fit_model("Michele_F3",   focused_rhs)
 summary(m_LoiTeS_full)
 
-m_LoiTeS_F1 <- lmer(
-  Michele_F1 ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
-)
-
-m_LoiTeS_F2 <- lmer(
-  Michele_F2 ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
-)
-
-m_LoiTeS_F3 <- lmer(
-  Michele_F3 ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
-)
-
-
-# Hughes (R-UCLA) -------------------------------------------------------------
-m_Hughes <- lmer(
-  Hughes_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
-)
+# Hughes
+m_Hughes <- fit_model("Hughes_total", focused_rhs)
 summary(m_Hughes)
 
-
-# Tschannen-Moran -------------------------------------------------------------
-m_Tschannen_total <- lmer(
-  Tschannen_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
-)
+# Tschannen-Moran
+m_Tschannen_total <- fit_model("Tschannen_total",         focused_rhs)
+m_Tschannen_instr <- fit_model("Tschannen_instruction",   focused_rhs)
+m_Tschannen_mgmt  <- fit_model("Tschannen_class_manager", focused_rhs)
+m_Tschannen_eng   <- fit_model("Tschannen_engagement",    focused_rhs)
 summary(m_Tschannen_total)
 
-m_Tschannen_instr <- update(m_Tschannen_total, Tschannen_instruction  ~ .)
-m_Tschannen_mgmt  <- update(m_Tschannen_total, Tschannen_class_manager ~ .)
-m_Tschannen_eng   <- update(m_Tschannen_total, Tschannen_engagement    ~ .)
-
-
-# Zimet MSPSS -----------------------------------------------------------------
-m_Zimet_total <- lmer(
-  Zimet_total ~ Age + Gender + Role + EmpStatus + OftenTeach + Formal + Qualified +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
-)
+# Zimet MSPSS
+m_Zimet_total <- fit_model("Zimet_total",     focused_rhs)
+m_Zimet_sig   <- fit_model("Zimet_sig_other", focused_rhs)
+m_Zimet_fam   <- fit_model("Zimet_family",    focused_rhs)
+m_Zimet_frd   <- fit_model("Zimet_friends",   focused_rhs)
 summary(m_Zimet_total)
 
-m_Zimet_sig <- update(m_Zimet_total, Zimet_sig_other ~ .)
-m_Zimet_fam <- update(m_Zimet_total, Zimet_family    ~ .)
-m_Zimet_frd <- update(m_Zimet_total, Zimet_friends   ~ .)
-
-
-# Cross-instrument model ------------------------------------------------------
-m_LoiTeS_cross <- lmer(
-  Michele_full ~ Tschannen_total + Zimet_total + WHO5_total +
-    Age + Gender + YearTaught + EmpStatus +
-    (1 | EmpCount),
-  data = score_df, REML = FALSE,
-  control = lmerControl(optimizer = "bobyqa")
+# Cross-instrument model
+cross_rhs <- paste(
+  c("Tschannen_total", "Zimet_total", "WHO5_total",
+    "Age", "Gender", "YearTaught", "EmpStatus"),
+  collapse = " + "
 )
+m_LoiTeS_cross <- fit_model("Michele_full", cross_rhs)
 summary(m_LoiTeS_cross)
 
-
-# Model comparison ------------------------------------------------------------
-m_LoiTeS_noGender <- update(m_LoiTeS_full, . ~ . - Gender)
+# Model comparison
+m_LoiTeS_noGender <- fit_model(
+  "Michele_full",
+  paste(setdiff(c(demo_scalar, demo_LvlTaught), "Gender"), collapse = " + ")
+)
 anova(m_LoiTeS_noGender, m_LoiTeS_full)
 
-# ICC: variance attributable to country
-icc_vals <- sapply(broad_models, function(m) {
-  vc          <- as.data.frame(VarCorr(m))
-  country_var <- vc$vcov[vc$grp == "EmpCount"]
-  resid_var   <- vc$vcov[vc$grp == "Residual"]
-  country_var / (country_var + resid_var)
-})
-print(round(icc_vals, 3))
-
-
-# Coefficient plots (no broom.mixed — uses extract_fixed) ---------------------
-# FIX 6: plot_coefs rebuilt on extract_fixed()
+# plots
 plot_coefs <- function(model, title = "") {
   coef_df <- extract_fixed(model, outcome_name = "")
-  coef_df %>%
-    filter(term != "(Intercept)") %>%
+  coef_df |>
+    filter(term != "(Intercept)") |>
     ggplot(aes(x = estimate, y = reorder(term, estimate))) +
     geom_vline(xintercept = 0, linetype = "dashed", colour = "grey50") +
     geom_errorbarh(aes(xmin = conf.low, xmax = conf.high),
@@ -620,8 +612,10 @@ plot_coefs <- function(model, title = "") {
     theme_bw(base_size = 11)
 }
 
-plot_coefs(m_LoiTeS_full,     "LoiTeS — demographic model")
-plot_coefs(m_WHO5_cross,      "WHO-5 — demographic model")
-plot_coefs(m_Tschannen_total, "Tschannen — teacher efficacy")
+plot_coefs(m_LoiTeS_full,     "LoiTeS")
+plot_coefs(m_WHO5_cross,      "WHO-5")
+plot_coefs(m_Hughes,          "Hughes")
+plot_coefs(m_Tschannen_total, "Tschannen")
+plot_coefs(m_Zimet_total,     "Zimet")
 ```
 
