@@ -213,6 +213,7 @@ print(fa_sol_d1_long_clean$loadings, cutoff = 0.2)
 print(fa_sol_d1_long_clean$communality)
 comm_table(fa_sol_d1_long_clean)
 
+psych::alpha(d1_long_clean)
 
 # Q20_5 has poor communality which hinders the factor loading. Q20_6 had a cross-loading with the first factor so should also be removed. The rest of the items are quite good (> .40)
 
