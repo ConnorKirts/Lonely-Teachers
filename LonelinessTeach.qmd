@@ -4,7 +4,6 @@ author: "Connor Kirts"
 format: html
 ---
 
-
 ```{r}
 #| echo: false
 #| warning: false
@@ -24,6 +23,9 @@ library(GPArotation)
 library(lme4)
 library(lmerTest)
 library(broom.mixed)
+library(sandwich)
+library(lmtest)
+library(car)
 
 # custom functions
 source('scr/read_data.R')
@@ -35,8 +37,6 @@ source('scr/prepare_EFA.R')
 ```
 
 # Obtaining and Formatting the Data
-
-Here, we bring in the data from a csv copy of the raw xlsx file. This was done for anonymity to responses as IPAddress was originally captured. The data is formatted from wide to long for the purpose of factor analysis and correlation.
 
 ```{r}
 #| echo: true
@@ -68,9 +68,8 @@ instruments <- list(
 d1_long <- make_it_long(d1, instruments = instruments)
 
 ```
-# Demographic Summary
 
-There are some open questions regarding how to refer to the responses to the variables. Gender for example seems to be a binary choice (1,2) but it is unknown whether 1 = male or female. Similar issues are found for all of the responses to 'EmpCount', 'Role', 'Subject', 'LvlTaught', 'YearTaught', 'EmpStatus', 'TeachAct', 'OftenTeach', 'Qualified', 'AcadBack', 'Formal'. Once the response format is known the demographicV function can be written to handle all of these for the reporting.
+# Demographic Summary
 
 ```{r}
 #| echo: false
@@ -154,12 +153,16 @@ kableExtra::kbl(
     footnote_as_chunk = TRUE
   )
 
+
+ # sum(d1$N_Role > 1, na.rm = TRUE) # 68 participants had more than 1 role
+ # sum(d1$N_LvlTaught > 1, na.rm = TRUE) # 103 participants taught more than one level
+ # sum(d1$N_TeachAct > 1, na.rm = TRUE) # 106 participants had multople teaching activities
+
 ```
 
+# Exploratory Factor Analysis
 
-# Exploratory Factor Analysis 
-
-In this section, we explore the dimensionality of the Michele instrument. First, the data is cleaned to only contain the Michele instrument responses. Then KMO and Bartlett's tests are used to understand if the data is suitable for factor analysis. Second, the EFA is run for the cleaned data. Parallel analysis is used to understand how many factors are estimated to be in the data by simulating factor analyses. The number of factors for the actual EFA analysis is determined by this parallel simulation. 
+In this section, we explore the dimensionality of the Michele instrument. First, the data is cleaned to only contain the Michele instrument responses. Then KMO and Bartlett's tests are used to understand if the data is suitable for factor analysis. Second, the EFA is run for the cleaned data. Parallel analysis is used to understand how many factors are estimated to be in the data by simulating factor analyses. The number of factors for the actual EFA analysis is determined by this parallel simulation.
 
 ## Prepping the data for EFA
 
@@ -181,12 +184,11 @@ cortest.bartlett(cm, n = nrow(d1_long_clean))
 
 ## Running an EFA
 
-Before performing an EFA, parallel analysis was used to determine the number of factors to retain. This determined that a three factor solution best fit the data, following the simulations (shown on Scree Plots). 
+Before performing an EFA, parallel analysis was used to determine the number of factors to retain. This determined that a three factor solution best fit the data, following the simulations (shown on Scree Plots).
 
-Factor analysis was then conducted on the 12 item Michele instrument using a Maximum Likelihood method (ML) with an oblimin rotation. Considering the sample size (> 200) ML was used to further investigate the statistical significance of the obtained factor loadings (Hair et al., 2019). An oblique rotation method was employed because it is assumed that factors will be correlated (Tabachnick & Fidell, 2019). 
+Factor analysis was then conducted on the 12 item Michele instrument using a Maximum Likelihood method (ML) with an oblimin rotation. Considering the sample size (> 200) ML was used to further investigate the statistical significance of the obtained factor loadings (Hair et al., 2019). An oblique rotation method was employed because it is assumed that factors will be correlated (Tabachnick & Fidell, 2019).
 
-Together, the three factors explain 64% of the variance. Factor 1 explains 23% of the variance (4 items), as does Factor 2 (4 items). Factor 3 explains 18% of the total variance (4 items). The communalities of the items, however, ranged from .389 (Q20_5) to .844 (Q20_10) (M = .64). Considering an item fell below the recommended threshold of .40 (Costello & Osborne, 2005), the item was removed before another factor analysis was performed. Additionally, another item (Q20_6) 
-
+Together, the three factors explain 64% of the variance. Factor 1 explains 23% of the variance (4 items), as does Factor 2 (4 items). Factor 3 explains 18% of the total variance (4 items). The communalities of the items, however, ranged from .389 (Q20_5) to .844 (Q20_10) (M = .64). One item (Q20_5) had a communality below the recommended threshold of .40 (.389; Costello & Osborne, 2005) and another item (Q20_6) cross-loaded on Factor 1. Q20_6 was removed and the EFA repeated; Q20_5 was retained because its communality rose above .40 in the 11-item solution.
 
 ```{r}
 #| echo: true
@@ -233,13 +235,419 @@ comm_table(fa_sol_d1_long_clean2)
 
 
 psych::alpha(d1_long_clean2)
+
 # There are three factors with strong items in each factor. While removing the two low communiality items improves the factors, future issues for confirmatory analyses will be impacted by only having 2 indicators for the second factor. 
 
 ```
 
-# Correlations between instruments
+## Scoring keys and consistency checks
 
-## Requires: d1 (wide format, as returned by read_data())
+The final LoiTeS has 11 items (Q20_6 was removed). All scores used downstream (correlations, regressions) are built from the keys defined here so that the removed item can never re-enter a total or subscale score. The chunk also checks (a) that no retained item is negatively keyed in the raw data (i.e., that no reverse-scoring is needed), (b) that the subscale keys match the primary loadings of the final EFA, and (c) defines the OSTES subscale key.
+
+```{r}
+#| echo: true
+#| id: scoring_keys
+
+# ---- LoiTeS final key (11 items) ----------------------------------------
+loites_removed <- "Q20_6"
+
+loites_subscales <- list(
+  F1_Colleagues = c("Q20_1", "Q20_2", "Q20_3", "Q20_4"),
+  F2_Belonging  = c("Q20_9", "Q20_10", "Q20_11", "Q20_12"),
+  F3_Students   = c("Q20_5", "Q20_7", "Q20_8")
+)
+loites_items <- unlist(loites_subscales, use.names = FALSE)
+sub_of_item  <- setNames(rep(names(loites_subscales), lengths(loites_subscales)),
+                         loites_items)
+
+stopifnot(length(loites_items) == 11,
+          !(loites_removed %in% loites_items),
+          all(loites_items %in% names(d1_long_clean2)))
+
+# ---- OSTES short-form key -------------------------------------------------
+#short-form key (Tschannen-Moran & Woolfolk Hoy) # Verify items are the same... (seems to be so!)
+ostes_key_published <- list(
+  instruction   = c("Q24_5", "Q24_9", "Q24_10", "Q24_12"),
+  class_manager = c("Q24_1", "Q24_6", "Q24_7", "Q24_8"),
+  engagement    = c("Q24_2", "Q24_3", "Q24_4", "Q24_11")
+)
+# Key used in the earlier version of this script
+ostes_key_previous <- list(
+  instruction   = c("Q24_5", "Q24_9", "Q24_10", "Q24_12"),
+  class_manager = c("Q24_1", "Q24_3", "Q24_6", "Q24_8"),
+  engagement    = c("Q24_2", "Q24_4", "Q24_7", "Q24_11")
+)
+ostes_key <- ostes_key_published
+stopifnot(setequal(unlist(ostes_key), paste0("Q24_", 1:12)))
+
+# ---- Strict summed score: NA if any item is missing (WHO-5, R-UCLA) -------
+row_sum_strict <- function(x) {
+  x <- as.data.frame(x)
+  ifelse(rowSums(is.na(x)) > 0, NA_real_, rowSums(x))
+}
+
+# ---- Check 1: response range and item direction (raw, wide data) ----------
+raw_loites <- d1 %>%
+  dplyr::select(all_of(c(loites_items, loites_removed))) %>%
+  mutate(across(everything(), as.numeric))
+
+cat("Observed response range (expect 1-5):", range(raw_loites, na.rm = TRUE), "\n")
+
+r_raw <- cor(raw_loites, use = "pairwise.complete.obs")
+cat("Lowest inter-item r among the 11 retained items:",
+    round(min(r_raw[loites_items, loites_items]), 2), "\n")
+cat("Correlations of the removed item (Q20_6) with the retained items:\n")
+print(round(r_raw[loites_removed, loites_items], 2))
+
+if (any(r_raw[loites_items, loites_items] < 0, na.rm = TRUE)) {
+  warning("A retained LoiTeS item correlates negatively with another: check whether reverse-scoring is needed.")
+}
+if (mean(r_raw[loites_removed, loites_items], na.rm = TRUE) < 0) {
+  message("Q20_6 correlates negatively with the retained items: it appears to be negatively keyed ",
+          "(and was not reverse-scored in the raw data).")
+}
+
+# ---- Check 2: do the subscale keys match the primary loadings of the EFA? --
+L <- unclass(fa_sol_d1_long_clean2$loadings)
+primary_factor <- apply(abs(L), 1, which.max)
+
+loadings_check <- data.frame(
+  item     = rownames(L),
+  subscale = sub_of_item[rownames(L)],
+  primary  = colnames(L)[primary_factor],
+  loading  = round(L[cbind(seq_len(nrow(L)), primary_factor)], 2),
+  row.names = NULL
+)
+
+keys_match_efa <-
+  all(tapply(loadings_check$primary, loadings_check$subscale,
+             function(x) length(unique(x)) == 1)) &&
+  length(unique(loadings_check$primary)) == length(loites_subscales)
+
+if (!keys_match_efa) {
+  warning("Subscale keys do not match the primary loadings of the final EFA: revise loites_subscales.")
+}
+
+factor_map <- sapply(loites_subscales, function(v) colnames(L)[primary_factor[v[1]]])
+
+loadings_check
+factor_map
+```
+
+## Item distributions and the matrix analysed
+
+Maximum likelihood on Pearson correlations is defensible for 7-category items only if the item distributions are not too irregular. This chunk reports, for each retained item, mean, SD, skewness, excess kurtosis, floor and ceiling percentages (% of responses at 1 and 5), and missing responses. Items with skew >= 2 or excess kurtosis >= 5 are flagged for "severe" non-normality. Multivariate skewness and kurtosis are also reported.
+
+```{r}
+#| echo: true
+#| id: item_distributions
+
+# Items of the final 11-item scale, as analysed in the final EFA
+d_items <- dplyr::select(d1_long_clean2, all_of(loites_items)) %>%
+  mutate(across(everything(), as.numeric))
+
+item_desc <- as.data.frame(psych::describe(d_items))[
+  , c("n", "mean", "sd", "median", "min", "max", "skew", "kurtosis")]
+item_desc$pct_floor   <- sapply(d_items, function(x) 100 * mean(x == 1, na.rm = TRUE))
+item_desc$pct_ceiling <- sapply(d_items, function(x) 100 * mean(x == 5, na.rm = TRUE))
+item_desc$n_missing   <- colSums(is.na(d_items))
+item_desc$flag        <- ifelse(abs(item_desc$skew) >= 2 | abs(item_desc$kurtosis) >= 5,
+                                "check", "")
+item_desc <- data.frame(item = rownames(item_desc), item_desc, row.names = NULL)
+
+kableExtra::kbl(
+  item_desc,
+  caption  = "LoiTeS item descriptives and distribution diagnostics (11 retained items)",
+  booktabs = TRUE,
+  digits   = 2
+) %>%
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"), font_size = 10) %>%
+  kableExtra::footnote(
+    general = "Skew and kurtosis from psych::describe (kurtosis = excess). Floor/ceiling = % of responses at 1 / 5.",
+    general_title = "Note.", footnote_as_chunk = TRUE)
+```
+
+## Missing data
+
+This chunk documents how much data are missing and how missingness is handled, and checks whether the EFA is sensitive to it.
+
+```{r}
+#| echo: true
+#| id: missing_data
+
+# LoiTeS (11 items)
+miss_loites <- data.frame(
+  N_respondents     = nrow(d_items),
+  N_complete        = sum(complete.cases(d_items)),
+  N_any_missing     = sum(!complete.cases(d_items)),
+  pct_cells_missing = round(100 * mean(is.na(as.matrix(d_items))), 2)
+)
+miss_loites
+
+# All instruments in the wide data: respondents with at least one missing item
+miss_instruments <- data.frame(
+  instrument   = names(instruments),
+  n_items      = lengths(instruments),
+  n_incomplete = sapply(instruments, function(v) sum(!complete.cases(d1[, v]))),
+  row.names = NULL
+)
+miss_instruments
+
+# Sensitivity: complete-case EFA vs. the (median-imputed) EFA used in the paper
+if (miss_loites$N_any_missing > 0) {
+  fa_cc <- fa(na.omit(d_items), nfactors = 3, rotate = "oblimin", fm = "ml")
+  cat("Tucker congruence, complete-case vs. imputed solution:\n")
+  print(round(psych::factor.congruence(fa_sol_d1_long_clean2, fa_cc), 2))
+} else {
+  cat("No missing LoiTeS responses: imputed and complete-case solutions are identical.\n")
+}
+
+# Scoring rules used in score_df (see correlations section):
+#  - LoiTeS, OSTES, MSPSS: mean of available items (na.rm = TRUE)
+#  - WHO-5, R-UCLA: strict sums (NA if any item missing); WHO-5 x 4 = 0-100
+```
+
+## Sensitivity analysis with polychoric correlations
+
+The 5-category items are re-analysed with polychoric correlations and MINRES extraction (oblimin rotation, three factors). Parallel analysis is repeated on the polychoric matrix. The solution is compared with the ML/Pearson solution by Tucker congruence, loading-by-loading, and by the proportion of items with the same primary factor.
+
+```{r}
+#| echo: true
+#| id: polychoric_sensitivity
+set.seed(3108)
+
+# Parallel analysis on the polychoric matrix
+pa_poly <- fa.parallel(d_items, fm = "minres", fa = "fa", cor = "poly", sim = FALSE)
+cat("Factors suggested by polychoric parallel analysis:", pa_poly$nfact, "\n")
+
+# Three-factor EFA, polychoric correlations, MINRES, oblimin
+fa_poly <- fa(d_items, nfactors = 3, rotate = "oblimin", fm = "minres", cor = "poly")
+print(fa_poly$loadings, cutoff = 0.2)
+
+# Compare with the ML / Pearson solution (fa_sol_d1_long_clean2)
+cong       <- psych::factor.congruence(fa_sol_d1_long_clean2, fa_poly)
+poly_match <- apply(abs(cong), 1, which.max)             # poly factor matching each ML factor
+poly_sign  <- sign(cong[cbind(seq_len(nrow(cong)), poly_match)])
+cat("Tucker congruence (rows = ML/Pearson, columns = MINRES/polychoric):\n")
+print(round(cong, 2))
+
+Lp <- unclass(fa_poly$loadings)[, poly_match, drop = FALSE]
+Lp <- sweep(Lp, 2, poly_sign, "*")                       # align order and sign
+
+poly_compare <- data.frame(
+  item        = rownames(L),
+  subscale    = sub_of_item[rownames(L)],
+  ML_pearson  = round(L[cbind(seq_len(nrow(L)), primary_factor)], 2),
+  MINRES_poly = round(Lp[cbind(seq_len(nrow(Lp)), primary_factor)], 2),
+  row.names = NULL
+)
+
+prim_poly  <- apply(abs(unclass(fa_poly$loadings)), 1, which.max)
+ml_equiv   <- sapply(prim_poly, function(q) which(poly_match == q)[1])
+same_assign <- mean(ml_equiv == primary_factor, na.rm = TRUE)
+
+poly_fit <- data.frame(
+  Solution = c("ML / Pearson", "MINRES / polychoric"),
+  TLI      = c(fa_sol_d1_long_clean2$TLI,    fa_poly$TLI),
+  RMSEA    = c(fa_sol_d1_long_clean2$RMSEA[1], fa_poly$RMSEA[1]),
+  RMSR     = c(fa_sol_d1_long_clean2$rms,    fa_poly$rms)
+)
+
+cat("Proportion of items with the same primary factor in both solutions:",
+    round(same_assign, 2), "\n")
+poly_compare
+poly_fit
+```
+
+## Reliability by subscale
+
+Cronbach's alpha (with Feldt 95% CIs), McDonald's omega (one-factor model within each subscale; percentile bootstrap 95% CIs), corrected item-total correlations computed within each subscale, and correlations between the three factors with 95% CIs. Latent factor correlations are bootstrapped with factors aligned to the reference solution by Tucker congruence; observed subscale-score correlations are reported as well.
+
+```{r}
+#| echo: true
+#| id: subscale_reliability
+set.seed(3108)
+
+feldt_ci <- function(alpha, n, k, level = .95) {
+  a   <- (1 - level) / 2
+  df1 <- n - 1
+  df2 <- (n - 1) * (k - 1)
+  c(lower = 1 - (1 - alpha) * qf(1 - a, df1, df2),
+    upper = 1 - (1 - alpha) * qf(a,     df1, df2))
+}
+
+# Standardised one-factor omega
+omega_1f <- function(x) {
+  f   <- suppressWarnings(suppressMessages(psych::fa(x, nfactors = 1, fm = "ml")))
+  lam <- as.numeric(f$loadings)
+  lam <- lam * sign(sum(lam))
+  sum(lam)^2 / (sum(lam)^2 + sum(1 - lam^2))
+}
+
+boot_omega <- function(x, B = 1000) {
+  x   <- x[complete.cases(x), , drop = FALSE]
+  est <- omega_1f(x)
+  bs  <- replicate(B, tryCatch(omega_1f(x[sample(nrow(x), replace = TRUE), , drop = FALSE]),
+                               error = function(e) NA_real_))
+  c(omega = est,
+    lower = unname(quantile(bs, .025, na.rm = TRUE)),
+    upper = unname(quantile(bs, .975, na.rm = TRUE)),
+    boot_failed = sum(is.na(bs)))
+}
+
+rel_rows <- list(); item_rows <- list()
+for (s in names(loites_subscales)) {
+  x   <- d_items[, loites_subscales[[s]], drop = FALSE]
+  a   <- psych::alpha(x, check.keys = FALSE)
+  n_s <- sum(complete.cases(x))
+  k_s <- ncol(x)
+  ci  <- feldt_ci(a$total$raw_alpha, n_s, k_s)
+  om  <- boot_omega(x)
+
+  rel_rows[[s]] <- data.frame(
+    Subscale = s, k = k_s, N = n_s,
+    alpha = a$total$raw_alpha, alpha_low = ci["lower"], alpha_high = ci["upper"],
+    omega = om["omega"], omega_low = om["lower"], omega_high = om["upper"],
+    mean_inter_item_r = a$total$average_r,
+    row.names = NULL
+  )
+  item_rows[[s]] <- data.frame(
+    Subscale = s, item = rownames(a$item.stats),
+    r_item_total_corrected = a$item.stats$r.drop,
+    alpha_if_dropped = a$alpha.drop$raw_alpha,
+    row.names = NULL
+  )
+}
+rel_tab  <- do.call(rbind, rel_rows)
+item_tab <- do.call(rbind, item_rows)
+
+kableExtra::kbl(rel_tab, caption = "Subscale reliability (alpha: Feldt 95% CI; omega: bootstrap 95% CI)",
+                booktabs = TRUE, digits = 2) %>%
+  kableExtra::kable_styling(latex_options = c("scale_down", "hold_position"), font_size = 10)
+
+kableExtra::kbl(item_tab, caption = "Corrected item-total correlations within subscales",
+                booktabs = TRUE, digits = 2) %>%
+  kableExtra::kable_styling(latex_options = "hold_position", font_size = 10)
+
+# ---- Correlations between the factors ------------------------------------
+# (a) latent factor correlations from the oblimin EFA, bootstrap CIs
+boot_phi <- function(data, ref, B = 500) {
+  k   <- ncol(ref$loadings)
+  out <- array(NA_real_, c(B, k, k))
+  for (b in seq_len(B)) {
+    d_b <- data[sample(nrow(data), replace = TRUE), , drop = FALSE]
+    f_b <- tryCatch(
+      suppressWarnings(suppressMessages(
+        fa(d_b, nfactors = k, rotate = "oblimin", fm = "ml", missing = TRUE))),
+      error = function(e) NULL)
+    if (is.null(f_b)) next
+    cg  <- psych::factor.congruence(ref, f_b)
+    ord <- apply(abs(cg), 1, which.max)
+    if (anyDuplicated(ord)) next
+    sgn <- sign(cg[cbind(seq_len(k), ord)])
+    out[b, , ] <- f_b$Phi[ord, ord] * (sgn %o% sgn)
+  }
+  out
+}
+
+phi_boot <- boot_phi(d_items, fa_sol_d1_long_clean2)
+pairs    <- combn(seq_along(loites_subscales), 2)
+phi_tab <- do.call(rbind, lapply(seq_len(ncol(pairs)), function(j) {
+  i1 <- match(factor_map[pairs[1, j]], colnames(L))
+  i2 <- match(factor_map[pairs[2, j]], colnames(L))
+  
+  # vector of bootstrapped correlations
+  vec <- phi_boot[, i1, i2]
+  
+  # Count valid (non-NA) results
+  valid_count <- sum(!is.na(vec))
+  
+  if (valid_count == 0) {
+    # check if we can calculate CI
+    return(data.frame(
+      Pair = paste(names(loites_subscales)[pairs[1, j]], "-", names(loites_subscales)[pairs[2, j]]),
+      phi = NA,
+      lower = NA,
+      upper = NA
+    ))
+  }
+  
+  # Quantile Calculation
+  lower_raw <- quantile(vec, 0.025, na.rm = TRUE)
+  upper_raw <- quantile(vec, 0.975, na.rm = TRUE)
+  
+  # if quantile fails or returns weird results
+  lower <- min(lower_raw, upper_raw)
+  upper <- max(lower_raw, upper_raw)
+  
+  data.frame(
+    Pair = paste(names(loites_subscales)[pairs[1, j]], "-", names(loites_subscales)[pairs[2, j]]),
+    phi = fa_sol_d1_long_clean2$Phi[i1, i2],
+    lower = lower,
+    upper = upper
+  )
+}))
+
+# (b) observed subscale-score correlations with 95% CIs
+sub_scores <- as.data.frame(sapply(loites_subscales,
+                                   function(v) rowMeans(d_items[, v, drop = FALSE], na.rm = TRUE)))
+sub_cor <- psych::corr.test(sub_scores, adjust = "none")
+
+kableExtra::kbl(phi_tab, caption = "Latent factor correlations (oblimin EFA; bootstrap 95% CI)",
+                booktabs = TRUE, digits = 2, row.names = FALSE) %>%
+  kableExtra::kable_styling(latex_options = "hold_position", font_size = 10)
+
+kableExtra::kbl(sub_cor$ci[, c("lower", "r", "upper", "p")],
+                caption = "Observed subscale-score correlations (Pearson, 95% CI)",
+                booktabs = TRUE, digits = 3) %>%
+  kableExtra::kable_styling(latex_options = "hold_position", font_size = 10)
+```
+
+## Omega hierarchical
+
+A Schmid-Leiman bifactor-type decomposition of the three-factor solution gives omega total (ω_t), omega hierarchical (ω_h; variance due to the general factor), omega for each group factor, and the explained common variance (ECV). Bootstrap CIs are provided for ω_h and ω_t. These estimates are exploratory (EFA-based, N = 211) and should be confirmed with a CFA bifactor comparison with later data.
+
+```{r}
+#| echo: true
+#| id: omega_hierarchical
+set.seed(3108)
+
+om <- psych::omega(d_items, nfactors = 3, fm = "ml", rotate = "oblimin",
+                   plot = FALSE)
+
+# Explained common variance (general factor vs. group factors)
+sl       <- om$schmid$sl
+g_load   <- sl[, "g"]
+grp_load <- sl[, grep("\\*$", colnames(sl)), drop = FALSE]
+ecv      <- sum(g_load^2) / (sum(g_load^2) + sum(grp_load^2))
+
+boot_om <- replicate(500, tryCatch({
+  b <- d_items[sample(nrow(d_items), replace = TRUE), , drop = FALSE]
+  o <- suppressWarnings(suppressMessages(
+    psych::omega(b, nfactors = 3, fm = "ml", plot = FALSE)))
+  c(omega_h = o$omega_h, omega_t = o$omega.tot)
+}, error = function(e) c(omega_h = NA_real_, omega_t = NA_real_)))
+
+omega_tab <- data.frame(
+  Index    = c("omega_total", "omega_hierarchical", "omega_h / omega_total", "ECV"),
+  Estimate = c(om$omega.tot, om$omega_h, om$omega_h / om$omega.tot, ecv),
+  CI_low   = c(quantile(boot_om["omega_t", ], .025, na.rm = TRUE),
+               quantile(boot_om["omega_h", ], .025, na.rm = TRUE), NA, NA),
+  CI_high  = c(quantile(boot_om["omega_t", ], .975, na.rm = TRUE),
+               quantile(boot_om["omega_h", ], .975, na.rm = TRUE), NA, NA)
+)
+
+kableExtra::kbl(omega_tab, caption = "Omega coefficients for the 11-item, three-factor solution",
+                booktabs = TRUE, digits = 2, row.names = FALSE) %>%
+  kableExtra::kable_styling(latex_options = "hold_position", font_size = 10)
+
+# Omega for the general and group factors separately
+kableExtra::kbl(om$omega.group, caption = "Omega by general / group factor (rotated factors F1*-F3*)",
+                booktabs = TRUE, digits = 2) %>%
+  kableExtra::kable_styling(latex_options = "hold_position", font_size = 10)
+```
+
+# Correlations between instruments
 
 ```{r}
 #| echo: true
@@ -267,80 +675,63 @@ d1_cor <- d1_cor %>%
 score_df <- d1_cor %>%
   mutate(
 
-    # WHO-5 (total score: raw 0–25, × 4 = 0–100)
-    WHO5_total = rowSums(
-      across(c('Q28_1','Q28_2','Q28_3','Q28_4','Q28_5')),
-      na.rm = TRUE) * 4,
+    # WHO-5 (raw 0-25, x 4 = 0-100). Strict sum
+    WHO5_total = row_sum_strict(
+      across(c('Q28_1','Q28_2','Q28_3','Q28_4','Q28_5'), ~ 6 - .x)) * 4,
+    
+    # LoiTeS: FINAL 11-ITEM scale (Q20_6 removed)
+    # higher = greater relational connection (lower professional loneliness).
+    # Column names keep the 'Michele' label for later
+    Michele_full  = rowMeans(across(all_of(loites_items)), na.rm = TRUE),
 
-    # Michele (full scale + EFA-derived sub-scales)
-    Michele_full  = rowMeans(
-      across(c('Q20_1','Q20_2','Q20_3','Q20_4',
-               'Q20_5','Q20_6','Q20_7','Q20_8',
-               'Q20_9','Q20_10','Q20_11','Q20_12')),
-      na.rm = TRUE),
+         # EFA Factor 1 (colleagues)
+         Michele_F1    = rowMeans(across(all_of(loites_subscales$F1_Colleagues)),
+                                  na.rm = TRUE),
 
-         # EFA Factor 1
-         Michele_F1    = rowMeans(
-           across(c('Q20_1','Q20_2','Q20_3','Q20_4')),
-           na.rm = TRUE),
+         # EFA Factor 2 (professional belonging)
+         Michele_F2    = rowMeans(across(all_of(loites_subscales$F2_Belonging)),
+                                  na.rm = TRUE),
 
-         # EFA Factor 2
-         Michele_F2    = rowMeans(
-           across(c('Q20_9','Q20_10','Q20_11','Q20_12')),
-           na.rm = TRUE),
-
-         # EFA Factor 3
-         Michele_F3    = rowMeans(
-           across(c('Q20_5', 'Q20_7','Q20_8')),
-           na.rm = TRUE),
+         # EFA Factor 3 (students)
+         Michele_F3    = rowMeans(across(all_of(loites_subscales$F3_Students)),
+                                  na.rm = TRUE),
 
     # Hughes / R-UCLA (sum score after reverse-scoring)
-    Hughes_total  = rowSums(
-      across(c('Q22_1','Q22_2','Q22_3','Q22_4','Q22_5',
-               'Q22_6','Q22_7','Q22_8','Q22_9','Q22_10',
-               'Q22_11','Q22_12','Q22_13','Q22_14','Q22_15',
-               'Q22_16','Q22_17','Q22_18','Q22_19','Q22_20')),
-      na.rm = TRUE),
+    Hughes_total  = row_sum_strict(across(all_of(paste0('Q22_', 1:20)))),
 
-    # Tschannen-Moran (3 sub-scales, mean score each)
-    Tschannen_total          = rowMeans(
-      across(c('Q24_1','Q24_2','Q24_3','Q24_4','Q24_5',
-               'Q24_6','Q24_7','Q24_8','Q24_9','Q24_10',
-               'Q24_11','Q24_12')),
-      na.rm = TRUE),
-    
+    # Tschannen-Moran (mean score; subscale keys defined in `ostes_key`)
+    Tschannen_total          = rowMeans(across(all_of(paste0('Q24_', 1:12))),
+                                        na.rm = TRUE),
+
         # Sub-scale 1
-         Tschannen_instruction    = rowMeans(
-          across(c('Q24_5','Q24_9','Q24_10','Q24_12')),
-          na.rm = TRUE),
-        
-        # Sub-scale 2
-         Tschannen_class_manager  = rowMeans(
-          across(c('Q24_1','Q24_3','Q24_6','Q24_8')),
-          na.rm = TRUE),
-    
-        # Sub-scale 3
-         Tschannen_engagement     = rowMeans(
-          across(c('Q24_2','Q24_4','Q24_7','Q24_11')),
-          na.rm = TRUE),
+         Tschannen_instruction    = rowMeans(across(all_of(ostes_key$instruction)),
+                                             na.rm = TRUE),
 
-    # Zimet MSPSS (3 sub-scales, mean score / 4)
+        # Sub-scale 2
+         Tschannen_class_manager  = rowMeans(across(all_of(ostes_key$class_manager)),
+                                             na.rm = TRUE),
+
+        # Sub-scale 3
+         Tschannen_engagement     = rowMeans(across(all_of(ostes_key$engagement)),
+                                             na.rm = TRUE),
+
+    # Zimet MSPSS (3 sub-scales)
     Zimet_total     = rowMeans(
       across(c('Q26_1','Q26_2','Q26_3','Q26_4','Q26_5',
                'Q26_6','Q26_7','Q26_8','Q26_9','Q26_10',
                'Q26_11','Q26_12')),
       na.rm = TRUE),
-    
+
         # Sub-scale 1
          Zimet_sig_other = rowMeans(
           across(c('Q26_1','Q26_2','Q26_5','Q26_10')),
           na.rm = TRUE),
-    
+
         # Sub-scale 2
         Zimet_family    = rowMeans(
           across(c('Q26_3','Q26_4','Q26_8','Q26_11')),
           na.rm = TRUE),
-    
+
         # Sub-scale 3
         Zimet_friends   = rowMeans(
           across(c('Q26_6','Q26_7','Q26_9','Q26_12')),
@@ -360,17 +751,14 @@ score_vars <- c(
 cor_data <- score_df %>%
   dplyr::select(all_of(score_vars))
 
-# Pearson correlation matrix with pairwise complete observations
+# correlation matrix 
 cor_matrix <- cor(cor_data, use = "pairwise.complete.obs", method = "pearson")
 
-# p-values via psych::corr.test (also gives CIs)
 cor_test <- psych::corr.test(cor_data, use = "pairwise", method = "pearson",
-                             adjust = "holm")   # Holm correction for multiple comparisons
+                             adjust = "holm") 
 
 
 # Display: correlation table with significance stars
-
-# attach stars to a correlation matrix
 add_stars <- function(r_mat, p_mat) {
   stars <- ifelse(p_mat < .001, "***",
            ifelse(p_mat < .010, "**",
@@ -382,7 +770,11 @@ add_stars <- function(r_mat, p_mat) {
   )
 }
 
-cor_starred <- add_stars(cor_matrix, cor_test$p)
+
+p_holm <- cor_test$p
+p_holm[lower.tri(p_holm)] <- t(p_holm)[lower.tri(p_holm)]
+
+cor_starred <- add_stars(cor_matrix, p_holm)
 cor_starred[upper.tri(cor_starred, diag = TRUE)] <- ""
 
 # Short display labels (edit to match your preferred names)
@@ -421,9 +813,11 @@ desc_stats <- cor_data %>%
     SD   = round(sd(score,   na.rm = TRUE), 2),
     Min  = round(min(score,  na.rm = TRUE), 2),
     Max  = round(max(score,  na.rm = TRUE), 2),
+    Skew     = round(psych::skew(score,   na.rm = TRUE), 2),
+    Kurtosis = round(psych::kurtosi(score, na.rm = TRUE), 2),
     .groups = "drop"
   ) %>%
-  dplyr::arrange(match(Scale, score_vars))   # keep original order
+  dplyr::arrange(match(Scale, score_vars))
 
 kableExtra::kbl(
   desc_stats,
@@ -435,13 +829,70 @@ kableExtra::kbl(
 
 ```
 
-# Linear Mixed Models 
-
-Want to compare how the variables for the teacher demographics relate to the responses to the WHO-5, LoiTeS, Hughes, Tschannen, and Zimet instruments. 
 
 ```{r}
 #| echo: true
-#| warnings: false
+#| warning: false
+#| id: ref_coding
+
+# Coding of categorical predictors -------------------------------------------
+# A tiny reference group (e.g. fixed-term teachers) makes every coefficient unstable, so:
+#   1. pool very small categories (n < min_n) 
+#   2. use the LARGEST remaining category as the reference
+
+collapse_rare <- function(x, min_n = 10, label = "Other") {
+  x  <- as.character(x)
+  tb <- table(x)
+  x[x %in% names(tb)[tb < min_n]] <- label
+  x
+}
+
+set_ref <- function(x) {
+  x <- factor(x)
+  relevel(x, ref = names(which.max(table(x))))
+}
+
+score_df <- score_df %>%
+  dplyr::mutate(
+    Gender     = set_ref(Gender),
+    EmpStatus  = set_ref(collapse_rare(EmpStatus,  label = "Other")),
+    OftenTeach = set_ref(collapse_rare(OftenTeach, label = "Other / infrequent")),
+    Qualified  = set_ref(collapse_rare(Qualified,  label = "Other")),
+    Formal     = set_ref(Formal)
+  )
+
+# YearTaught is an ordered grouping: reference = shortest experience
+score_df$YearTaught <- relevel(factor(score_df$YearTaught), ref = "1-7 years")
+
+# Table of reference groups (goes in the Supplementary Material)
+cat_vars <- c("Gender", "YearTaught", "EmpStatus", "OftenTeach", "Qualified", "Formal")
+
+ref_table <- do.call(rbind, lapply(cat_vars, function(v) {
+  x   <- score_df[[v]]
+  lev <- levels(x)
+  tb  <- table(x)
+  data.frame(
+    Variable        = v,
+    Reference       = lev[1],
+    N_reference     = as.integer(tb[1]),
+    `Compared levels (n)` = paste0(lev[-1], " (", as.integer(tb[-1]), ")", collapse = "; "),
+    check.names = FALSE
+  )
+}))
+
+kableExtra::kbl(ref_table, caption = "Reference groups for categorical predictors",
+                booktabs = TRUE) |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "striped"),
+                            full_width = TRUE)
+```
+
+# Regression Models 
+
+Want to compare how the variables for the teacher demographics relate to the responses to the WHO-5, LoiTeS, Hughes, Tschannen, and Zimet instruments. Ignoring the country here as the N=211 could not suit as a comparision across culture or country.
+
+```{r}
+#| echo: true
+#| warning: false
 #| id: mixed_Models
 
 # Expand multi-select columns 
@@ -595,7 +1046,7 @@ summary(m_LoiTeS_cross)
 # Model comparison
 m_LoiTeS_noGender <- fit_model(
   "Michele_full",
-  paste(setdiff(c(demo_scalar, demo_LvlTaught), "Gender"), collapse = " + ")
+  paste(setdiff(c(demo_scalar, demo_TeachAct), "Gender"), collapse = " + ")
 )
 anova(m_LoiTeS_noGender, m_LoiTeS_full)
 
@@ -620,3 +1071,316 @@ plot_coefs(m_Tschannen_total, "Tschannen")
 plot_coefs(m_Zimet_total,     "Zimet")
 ```
 
+## Functions for making comparisons
+
+VIF/tolerance, residual diagnostics, homoscedasticity, influential cases, confidence intervals, and determining reference groups
+
+```{r}
+#| echo: true
+#| warning: false
+#| id: reg_helpers
+
+# Robust HC3 (small-sample heteroscedasticity-consistent) coefficients with 95% CIs 
+
+robust_coefs <- function(model, type = "HC3") {
+  vc  <- sandwich::vcovHC(model, type = type)
+  dfr <- df.residual(model)
+  ct  <- lmtest::coeftest(model, vcov. = vc, df = dfr)
+  ci  <- lmtest::coefci(model,   vcov. = vc, df = dfr, level = .95)
+  data.frame(
+    Term      = rownames(ct),
+    B         = ct[, 1],
+    SE_robust = ct[, 2],
+    CI_low    = ci[, 1],
+    CI_high   = ci[, 2],
+    p         = ct[, 4],
+    row.names = NULL
+  )
+}
+
+# VIF / tolerance ---------------------------------------------------------------
+# car::vif() returns GVIF for factors; GVIF^(1/(2*Df)) squared is comparable to a
+# usual VIF. Tolerance = 1 / VIF.
+vif_table <- function(model) {
+  v <- car::vif(model)
+  if (is.matrix(v)) {
+    out <- data.frame(Predictor = rownames(v), Df = v[, "Df"],
+                      VIF = v[, "GVIF^(1/(2*Df))"]^2, row.names = NULL)
+  } else {
+    out <- data.frame(Predictor = names(v), Df = 1, VIF = as.numeric(v))
+  }
+  out$Tolerance <- 1 / out$VIF
+  out
+}
+
+# One-row diagnostic summary per model ----------------------------------------
+diagnose_lm <- function(model, label) {
+  n  <- nobs(model)
+  k  <- length(coef(model)) - 1
+  v  <- tryCatch({
+    vv <- car::vif(model)
+    if (is.matrix(vv)) vv[, "GVIF^(1/(2*Df))"]^2 else vv
+  }, error = function(e) NA_real_)
+  cd <- cooks.distance(model)
+  data.frame(
+    Model        = label,
+    N            = n,
+    Predictors   = k,
+    Max_VIF      = round(suppressWarnings(max(v, na.rm = TRUE)), 2),
+    BP_p         = signif(lmtest::bptest(model)$p.value, 3),     # homoscedasticity
+    Shapiro_p    = signif(shapiro.test(residuals(model))$p.value, 3),  # residual normality
+    N_Cook       = sum(cd > 4 / n),                              # influential cases
+    N_leverage   = sum(hatvalues(model) > 3 * (k + 1) / n),      # high leverage
+    N_stdres_gt3 = sum(abs(rstandard(model)) > 3)                # outliers
+  )
+}
+```
+
+# Hierarchical regression: does LoiTeS retain associations after accounting for general loneliness?
+
+LoiTeS total score was regressed on R-UCLA loneliness plus theoretically motivated
+controls (Block 1), and then on MSPSS, WHO-5 and OSTES (Block 2). Cases are
+restricted to complete data on all variables so ΔR² is computed on the same sample.
+
+```{r}
+#| echo: true
+#| warning: false
+#| id: hierarchical
+
+hier_df <- score_df %>%
+  dplyr::select(Michele_full, Hughes_total, Age, Gender, YearTaught, EmpStatus,
+                Zimet_total, WHO5_total, Tschannen_total) %>%
+  dplyr::filter(complete.cases(.)) %>%
+  droplevels()
+
+cat("Complete cases in hierarchical models: N =", nrow(hier_df), "\n")
+
+# 1: general loneliness + controls
+m_h1 <- lm(Michele_full ~ Hughes_total + Age + Gender + YearTaught + EmpStatus,
+           data = hier_df)
+summary(m_h1)
+
+# 2: + support (MSPSS), wellbeing (WHO-5), self-efficacy (OSTES)
+m_h2 <- lm(Michele_full ~ Hughes_total + Age + Gender + YearTaught + EmpStatus +
+             Zimet_total + WHO5_total + Tschannen_total,
+           data = hier_df)
+summary(m_h2)
+
+hier_models <- list("1: R-UCLA + controls"       = m_h1,
+                    "2: + MSPSS, WHO-5, OSTES"   = m_h2)
+
+# R2, adjusted R2, change in R2
+hier_fit <- data.frame(
+  Model  = names(hier_models),
+  R2     = sapply(hier_models, function(m) summary(m)$r.squared),
+  Adj_R2 = sapply(hier_models, function(m) summary(m)$adj.r.squared),
+  row.names = NULL
+)
+hier_fit$Delta_R2 <- c(NA, diff(hier_fit$R2))
+
+# Test of the change in R2: classical F and heteroscedasticity-robust (HC3) Wald F
+chg_classic <- anova(m_h1, m_h2)
+chg_robust  <- lmtest::waldtest(m_h1, m_h2,
+                                vcov = function(x) sandwich::vcovHC(x, type = "HC3"))
+
+hier_change <- data.frame(
+  Test = c("F change (classical)", "F change (HC3 robust)"),
+  F    = c(chg_classic$F[2], chg_robust$F[2]),
+  df1  = c(abs(chg_classic$Df[2]), abs(chg_robust$Df[2])),
+  df2  = c(chg_classic$Res.Df[2], chg_robust$Res.Df[2]),
+  p    = c(chg_classic$`Pr(>F)`[2], chg_robust$`Pr(>F)`[2])
+)
+
+kableExtra::kbl(hier_fit,    digits = 3, caption = "Hierarchical models: R2 and change in R2") |>
+  kableExtra::kable_styling(latex_options = "hold_position")
+kableExtra::kbl(hier_change, digits = 3, caption = "Test of the change in R2 (2 over 1)") |>
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+# Coefficients with robust SEs and 95% CIs (reference groups: see ref_table)
+kableExtra::kbl(robust_coefs(m_h1), digits = 3,
+                caption = "1: coefficients with HC3 robust SEs and 95% CIs") |>
+  kableExtra::kable_styling(latex_options = "hold_position")
+kableExtra::kbl(robust_coefs(m_h2), digits = 3,
+                caption = "2: coefficients with HC3 robust SEs and 95% CIs") |>
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+# Multicollinearity
+kableExtra::kbl(vif_table(m_h2), digits = 2,
+                caption = "2: VIF and tolerance (GVIF-adjusted for categorical terms)") |>
+  kableExtra::kable_styling(latex_options = "hold_position")
+```
+
+# Tables to report regressions stats
+
+```{r}
+#| echo: true
+#| warning: false
+#| id: reporting_tables
+
+fmt_p <- function(p) ifelse(p < .001, "< .001", paste0("= ", sub("^0", "", sprintf("%.3f", p))))
+
+# ---- Table 1: omnibus fit of every demographic model -----------------------------
+omnibus_row <- function(model, label) {
+  s <- summary(model)
+  f <- s$fstatistic
+  data.frame(
+    Outcome    = label,
+    N          = nobs(model),
+    Predictors = sum(!is.na(coef(model))) - 1,
+    F          = unname(f[1]),
+    df1        = unname(f[2]),
+    df2        = unname(f[3]),
+    p          = pf(f[1], f[2], f[3], lower.tail = FALSE),
+    R2         = s$r.squared,
+    Adj_R2     = s$adj.r.squared
+  )
+}
+
+demo_models <- list(
+  "WHO-5"             = m_WHO5_cross,
+  "LoiTeS total"      = m_LoiTeS_full,
+  "LoiTeS F1"         = m_LoiTeS_F1,
+  "LoiTeS F2"         = m_LoiTeS_F2,
+  "LoiTeS F3"         = m_LoiTeS_F3,
+  "R-UCLA"            = m_Hughes,
+  "OSTES total"       = m_Tschannen_total,
+  "OSTES instruction" = m_Tschannen_instr,
+  "OSTES class mgmt"  = m_Tschannen_mgmt,
+  "OSTES engagement"  = m_Tschannen_eng,
+  "MSPSS total"       = m_Zimet_total,
+  "MSPSS sig. other"  = m_Zimet_sig,
+  "MSPSS family"      = m_Zimet_fam,
+  "MSPSS friends"     = m_Zimet_frd
+)
+
+omnibus_tab <- do.call(rbind, Map(omnibus_row, demo_models, names(demo_models)))
+rownames(omnibus_tab) <- NULL
+omnibus_tab$p_holm <- p.adjust(omnibus_tab$p, method = "holm")
+
+kableExtra::kbl(omnibus_tab, digits = 3, booktabs = TRUE,
+                caption = "Demographic regression models: omnibus tests and variance explained") |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down", "striped"))
+
+range(omnibus_tab$Adj_R2)   # adjusted R2 range for the text (all 14 models)
+range(omnibus_tab$Predictors)
+
+# ---- coefficient strings for the text ----------------------------
+# e.g. report_coef(m_Hughes, "EmpStatusFreelance/Self employed")
+report_coef <- function(model, term, digits = 2) {
+  r <- robust_coefs(model)
+  r <- r[r$Term == term, ]
+  if (nrow(r) == 0) stop("Term not found. Available: ", paste(robust_coefs(model)$Term, collapse = "; "))
+  sprintf(paste0("B = %.", digits, "f, 95%% CI [%.", digits, "f, %.", digits, "f], p %s"),
+          r$B, r$CI_low, r$CI_high, fmt_p(r$p))
+}
+
+# ---- Table 2: hierarchical model, both blocks ----------------------
+fmt_ci <- function(d) sprintf("%.2f [%.2f, %.2f]", d$B, d$CI_low, d$CI_high)
+
+b1 <- robust_coefs(m_h1)
+b2 <- robust_coefs(m_h2)
+
+hier_tab <- merge(
+  data.frame(Term = b1$Term, `Block 1 B [95% CI]` = fmt_ci(b1),
+             `p (1)` = fmt_p(b1$p), check.names = FALSE),
+  data.frame(Term = b2$Term, `Block 2 B [95% CI]` = fmt_ci(b2),
+             `p (2)` = fmt_p(b2$p), check.names = FALSE),
+  by = "Term", all = TRUE, sort = FALSE
+)
+
+kableExtra::kbl(hier_tab, booktabs = TRUE, na = "",
+                caption = "Hierarchical regression predicting LoiTeS total score (HC3 robust 95% CIs)") |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down", "striped")) |>
+  kableExtra::footnote(
+    general = "Reference groups are listed in the reference-group table. 1: R-UCLA + controls; 2 adds MSPSS, WHO-5 and OSTES.",
+    general_title = "Note.", footnote_as_chunk = TRUE
+  )
+```
+
+```{r}
+#| echo: true
+#| warning: false
+#| fig-height: 7
+#| id: hier_diagnostic_plots
+
+# Residuals vs fitted (linearity / homoscedasticity), normal Q-Q,
+# scale-location (homoscedasticity), residuals vs leverage (influence)
+op <- par(mfrow = c(2, 2))
+plot(m_h2, which = c(1, 2, 3, 5))
+par(op)
+```
+
+```{r}
+#| echo: true
+#| warning: false
+#| id: hier_influence
+
+n_h2 <- nobs(m_h2)
+cook <- cooks.distance(m_h2)
+infl <- which(cook > 4 / n_h2)
+
+cat("Cases with Cook's D > 4/N:", length(infl), "of", n_h2, "\n")
+
+if (length(infl) > 0) {
+  infl_tab <- data.frame(
+    Row           = infl,
+    Cooks_D       = cook[infl],
+    Std_residual  = rstandard(m_h2)[infl],
+    Leverage      = hatvalues(m_h2)[infl],
+    row.names     = NULL
+  )
+  print(round(infl_tab, 3))
+}
+
+# Sensitivity analysis: do the conclusions change without Cook cases?
+keep      <- setdiff(seq_len(n_h2), infl)
+m_h2_trim <- lm(formula(m_h2), data = hier_df[keep, ])
+
+sens <- merge(
+  robust_coefs(m_h2)[,      c("Term", "B", "p")],
+  robust_coefs(m_h2_trim)[, c("Term", "B", "p")],
+  by = "Term", suffixes = c("_all", "_trimmed"), sort = FALSE
+)
+
+kableExtra::kbl(sens, digits = 3,
+                caption = "Block 2 coefficients (HC3): all cases vs. excluding influential cases") |>
+  kableExtra::kable_styling(latex_options = "hold_position")
+```
+
+```{r}
+#| echo: true
+#| warning: false
+#| id: diagnostic_summary
+
+models_for_diag <- list(
+  "WHO-5 (demographics)"      = m_WHO5_cross,
+  "LoiTeS (demographics)"     = m_LoiTeS_full,
+  "R-UCLA (demographics)"     = m_Hughes,
+  "OSTES (demographics)"      = m_Tschannen_total,
+  "MSPSS (demographics)"      = m_Zimet_total,
+  "LoiTeS hierarchical: Block 1" = m_h1,
+  "LoiTeS hierarchical: Block 2" = m_h2
+)
+
+diag_tab <- do.call(rbind, Map(diagnose_lm, models_for_diag, names(models_for_diag)))
+rownames(diag_tab) <- NULL
+
+kableExtra::kbl(
+  diag_tab, booktabs = TRUE,
+  caption = "Regression diagnostics"
+) |>
+  kableExtra::kable_styling(latex_options = c("hold_position", "scale_down", "striped")) |>
+  kableExtra::footnote(
+    general = paste0(
+      "Max_VIF = largest (G)VIF; BP_p = Breusch-Pagan test (p < .05 suggests heteroscedasticity); ",
+      "Shapiro_p = Shapiro-Wilk test of residuals; N_Cook = cases with Cook's D > 4/N; ",
+      "N_leverage = cases with leverage > 3(k+1)/N; N_stdres_gt3 = cases with |standardised residual| > 3."
+    ),
+    general_title = "Note.", footnote_as_chunk = TRUE
+  )
+
+# vif() can fail if predictors are perfectly collinear; diagnose_lm() returns NA for VIF in that case.
+diag_broad <- do.call(rbind, Map(diagnose_lm, broad_models, names(broad_models)))
+rownames(diag_broad) <- NULL
+diag_broad
+```

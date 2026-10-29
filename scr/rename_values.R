@@ -1,101 +1,89 @@
 rename_values <- function(data) {
   
-  # translate a single numeric code to its label using a named vector
-  recode_one <- function(code, lookup) {
-    code   <- trimws(as.character(code))
-    result <- lookup[code]
-    if (is.na(result)) code else unname(result)  # leave unmapped values as-is
+  # --- Helpers for multi-select items (Role, LvlTaught, TeachAct) -------------
+  # Multiple answers are stored as comma separated codes, e.g. "1,2,3,6"
+  
+  # How many options selected? 
+  count_selected <- function(x) {
+    ifelse(is.na(x), NA_integer_, lengths(strsplit(as.character(x), ",")))
   }
   
-  # multi-select columns where a response may be a single
-  # value ("1") or several comma-separated values ("1,2,4").
-  recode_multiselect <- function(x, lookup) {
-    sapply(x, function(val) {
-      if (is.na(val)) return(NA_character_)
-      codes  <- strsplit(as.character(val), ",")[[1]]
-      labels <- sapply(trimws(codes), recode_one, lookup = lookup)
+  # Turn "1,2,3,6" into "Label 1 / Label 2 / Label 3 / Label 6"
+  recode_multi <- function(x, lookup) {
+    sapply(as.character(x), function(v) {
+      if (is.na(v)) return(NA_character_)
+      codes  <- trimws(strsplit(v, ",")[[1]])
+      labels <- unname(lookup[codes])
+      labels <- ifelse(is.na(labels), codes, labels)
       paste(labels, collapse = " / ")
     }, USE.NAMES = FALSE)
   }
   
-  # EmpCount (Country of Employment) --------------------------------------
+  # --- EmpCount --------------------------------------
   country_lookup <- c(
-    "Australia "               = "Australia",
-    "Canafa"                   = "Canada",
-    "canada"                   = "Canada",
-    "france"                   = "France",
-    "FRANCE"                   = "France",
-    "France "                  = "France",
-    "Germany "                 = "Germany",
-    "germany"                  = "Germany",
-    "Italia"                   = "Italy",
-    "Morocco "                 = "Morocco",
-    "Nederland"                = "Netherlands",
-    "The Netherlands"          = "Netherlands",
-    "spain"                    = "Spain",
-    "España"                   = "Spain",
-    "South African "           = "South Africa",
-    "South Africa "            = "South Africa",
-    "United Arab Emirates"     = "UAE",
-    "United Kingdom "          = "United Kingdom",
-    "united kingdom"           = "United Kingdom",
-    "UK"                       = "United Kingdom",
-    "U.K."                     = "United Kingdom",
-    "England"                  = "United Kingdom",
-    "England "                 = "United Kingdom",
-    "USA"                      = "United States",
-    "usa"                      = "United States",
-    "united states"            = "United States",
-    "United States "           = "United States",
-    "United States of America" = "United States",
-    "Teacher "                 = "Unknown"
+    "Australia "              = "Australia",
+    "Canafa"                  = "Canada",
+    "canada"                  = "Canada",
+    "france"                  = "France",
+    "FRANCE"                  = "France",
+    "France "                 = "France",
+    "Germany "                = "Germany",
+    "germany"                 = "Germany",
+    "Italia"                  = "Italy",
+    "Morocco "                = "Morocco",
+    "Nederland"               = "Netherlands",
+    "The Netherlands"         = "Netherlands",
+    "spain"                   = "Spain",
+    "España"                  = "Spain",
+    "South African "          = "South Africa",
+    "South Africa "           = "South Africa",
+    "United Arab Emirates"    = "UAE",
+    "United Kingdom "         = "United Kingdom",
+    "united kingdom"          = "United Kingdom",
+    "UK"                      = "United Kingdom",
+    "U.K."                    = "United Kingdom",
+    "England"                 = "United Kingdom",
+    "England "                = "United Kingdom",
+    "USA"                     = "United States",
+    "usa"                     = "United States",
+    "united states"           = "United States",
+    "United States "          = "United States",
+    "United States of America"= "United States",
+    "Teacher "                = "Unknown",
+    "Teacher"                = "Unknown"
   )
   data$EmpCount <- dplyr::recode(trimws(data$EmpCount), !!!country_lookup)
   
-  # YearTaught (How many years taught) --------------------------------------
+  # --- YearTaught -----------------------------------
   year_lookup <- c(
-    "1,5"           = "< 10 years",
-    "2"             = "< 10 years",
-    "3"             = "< 10 years",
-    "4"             = "< 10 years",
-    "5"             = "< 10 years",
-    "6"             = "< 10 years",
-    "7"             = "< 10 years",
-    "8"             = "< 10 years",
-    "8 years"       = "< 10 years",
-    "8years"        = "< 10 years",
-    "9"             = "< 10 years",
-    "10"            = ">= 10 years",
-    "10 years"      = ">= 10 years",
-    "11"            = ">= 10 years",
-    "12"            = ">= 10 years",
-    "13"            = ">= 10 years",
-    "14"            = ">= 10 years",
-    "15"            = ">= 10 years",
-    "16"            = ">= 10 years",
-    "17"            = ">= 10 years",
-    "18"            = ">= 10 years",
-    "19"            = ">= 10 years",
-    "20"            = ">= 20 years",
-    "20 YEARS"      = ">= 20 years",
-    "20+"           = ">= 20 years",
-    "21"            = ">= 20 years",
-    "22"            = ">= 20 years",
-    "23"            = ">= 20 years",
-    "24"            = ">= 20 years",
-    "25"            = ">= 20 years",
-    "26"            = ">= 20 years",
-    "27"            = ">= 20 years",
-    "28"            = ">= 20 years",
-    "29"            = ">= 20 years",
-    "30"            = ">= 30 years",
-    "31"            = ">= 30 years",
-    "34"            = ">= 30 years",
-    "35"            = ">= 30 years",
-    "40"            = ">= 30 years"
+    "1,5"             = "1",
+    "10 years"        = "10",
+    "8 years"         = "8",
+    "8years"          = "8",
+    "20 YEARS"        = "20",
+    "20+"             = "20"
   )
-  data$YearTaught <- dplyr::recode(trimws(data$YearTaught), !!!year_lookup)
   
+  # Keep the cleaned numeric years, then group them
+  data <- data %>%
+    dplyr::mutate(
+      YearTaught_num = as.numeric(dplyr::recode(trimws(YearTaught), !!!year_lookup)),
+      
+      YearTaught = dplyr::case_when(
+        is.na(YearTaught_num) ~ NA_character_,   # keep missing as NA (not a group)
+        YearTaught_num <= 7   ~ "1-7 years",
+        YearTaught_num <= 10  ~ "8-10 years",
+        YearTaught_num <= 17  ~ "11-17 years",
+        TRUE                  ~ "18-40 years"
+      ),
+      
+      YearTaught = factor(YearTaught,
+                          levels = c("1-7 years", "8-10 years",
+                                     "11-17 years", "18-40 years"))
+    )
+  
+  # Check distribution
+  # data %>% count(YearTaught)
   
   # Gender ----------------------------------------------------------------
   data$Gender <- dplyr::case_when(
@@ -115,7 +103,8 @@ rename_values <- function(data) {
     "5" = "Principal/Coordinator",
     "6" = "Other"
   )
-  data$Role <- recode_multiselect(data$Role, role_lookup)
+  data$N_Role <- count_selected(data$Role)
+  data$Role <- recode_multi(data$Role, role_lookup)
   
   # LvlTaught -------------------------------------------------------------
   lvl_lookup <- c(
@@ -127,7 +116,8 @@ rename_values <- function(data) {
     "6" = "Higher Ed.",
     "7" = "Other"
   )
-  data$LvlTaught <- recode_multiselect(data$LvlTaught, lvl_lookup)
+  data$N_LvlTaught <- count_selected(data$LvlTaught)  
+  data$LvlTaught <- recode_multi(data$LvlTaught, lvl_lookup)
   
   # EmpStatus -------------------------------------------------------------
   data$EmpStatus <- dplyr::case_when(
@@ -148,7 +138,8 @@ rename_values <- function(data) {
     "5" = "Practical/Lab based",
     "6" = "Other"
   )
-  data$TeachAct <- recode_multiselect(data$TeachAct, act_lookup)
+  data$N_TeachAct <- count_selected(data$TeachAct)   
+  data$TeachAct <- recode_multi(data$TeachAct, act_lookup)
   
   # OftenTeach ------------------------------------------------------------
   data$OftenTeach <- dplyr::case_when(
