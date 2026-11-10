@@ -122,8 +122,8 @@ read_data <- function(filename=NULL, controlQ=NULL) {
     print(paste("Inattentive total:", sum(inattentive)))
     
     if (sum(inattentive) > 0) {
-      print("IDs of inattentive participants:")
-      print(d$PROLIFIC_PID[inattentive])
+      #print("IDs of inattentive participants:")
+      #print(d$PROLIFIC_PID[inattentive])
       df <- d[!inattentive, ]
     } else {
       df <- d

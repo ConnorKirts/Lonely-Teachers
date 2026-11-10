@@ -425,7 +425,7 @@ fa_poly <- fa(d_items, nfactors = 3, rotate = "oblimin", fm = "minres", cor = "p
 print(fa_poly$loadings, cutoff = 0.2)
 
 # Compare with the ML / Pearson solution (fa_sol_d1_long_clean2)
-cong       <- psych::factor.congruence(fa_sol_d1_long_clean2, fa_poly)
+cong       <- psych::factor.congruence(L, unclass(fa_poly$loadings)[rownames(L), ])
 poly_match <- apply(abs(cong), 1, which.max)             # poly factor matching each ML factor
 poly_sign  <- sign(cong[cbind(seq_len(nrow(cong)), poly_match)])
 cat("Tucker congruence (rows = ML/Pearson, columns = MINRES/polychoric):\n")
@@ -550,7 +550,8 @@ boot_phi <- function(data, ref, B = 500) {
   out
 }
 
-phi_boot <- boot_phi(d_items, fa_sol_d1_long_clean2)
+phi_boot <- boot_phi(d1_long_clean2[, rownames(fa_sol_d1_long_clean2$loadings)],
+fa_sol_d1_long_clean2)
 pairs    <- combn(seq_along(loites_subscales), 2)
 phi_tab <- do.call(rbind, lapply(seq_len(ncol(pairs)), function(j) {
   i1 <- match(factor_map[pairs[1, j]], colnames(L))
